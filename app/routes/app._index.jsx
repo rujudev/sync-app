@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { ProgressBar } from '@shopify/polaris';
+import '@shopify/polaris/build/esm/styles.css';
 import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import styles from "./_index/styles.module.css";
@@ -133,14 +135,14 @@ export default function Index() {
       
       const updatedProducts = prev?.recentProducts ? [newProduct, ...prev.recentProducts.slice(0, 9)] : [newProduct];
       
-      // Calcular estadísticas más detalladas
+      // Calcular estadísticas más detalladas con nuevos contadores individuales
       const newStats = {
-        processedItems: data.processed,
-        totalItems: data.total,
-        createdItems: prev?.createdItems || 0,
-        updatedItems: prev?.updatedItems || 0,
-        skippedItems: prev?.skippedItems || 0,
-        errorItems: prev?.errorItems || 0,
+        processedItems: data.productsProcessed ?? data.processed,
+        totalItems: data.totalProducts ?? data.total,
+  createdItems: (data.productsCreated ?? prev?.createdItems) || 0,
+  updatedItems: (data.productsUpdated ?? prev?.updatedItems) || 0,
+  skippedItems: (data.productsOmitted ?? prev?.skippedItems) || 0,
+  errorItems: (data.productsWithErrors ?? prev?.errorItems) || 0,
         currentStep: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${data.productTitle}`,
         status: 'syncing',
         isActive: true,
@@ -308,12 +310,13 @@ export default function Index() {
       setSyncState(prev => ({
         ...prev,
         status: 'completed',
-        currentStep: `Completado: ${data.stats.created} creados, ${data.stats.updated} actualizados`,
-        processedItems: data.stats.processed,
-        createdItems: data.stats.created,
-        updatedItems: data.stats.updated,
-        errorItems: data.stats.errors,
-        totalItems: data.stats.totalVariantGroups,
+        currentStep: `Completado: ${data.stats.productsCreated} creados, ${data.stats.productsUpdated} actualizados`,
+        processedItems: data.stats.productsProcessed,
+        createdItems: data.stats.productsCreated,
+        updatedItems: data.stats.productsUpdated,
+        errorItems: data.stats.productsWithErrors,
+        skippedItems: data.stats.productsOmitted,
+        totalItems: data.stats.totalProducts,
         completedAt: data.endTime,
         isActive: false
       }));
@@ -438,13 +441,13 @@ export default function Index() {
 
                 {/* BARRA DE PROGRESO VISUAL */}
                 <s-stack rowGap="large">
-                  <s-progress-bar 
+                  <ProgressBar 
                     progress={((syncState?.processedItems || 0) / (syncState?.totalItems || 1)) * 100}
                     size="small"
                   />
                   <s-stack direction="inline" columnGap="base" blockSize="auto" justifyContent="center">
                     <s-text variant="body-sm" tone="subdued">
-                      {syncState?.processedItems || 0} / {syncState?.totalItems || 0} productos
+                      {syncState?.processedItems || 0} / {syncState?.totalItems || 0} productos individuales
                     </s-text>
                     <s-divider direction="block" />
                     <s-text variant="caption" tone="subdued">
@@ -494,19 +497,17 @@ export default function Index() {
                   </s-box>
 
                   {/* ERRORES */}
-                  {syncState?.errorItems > 0 && (
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
                       <s-text variant="heading-lg" fontWeight="bold" tone="critical">
-                        {syncState?.errorItems}
+                        {syncState?.errorItems || 0}
                       </s-text>
                       <s-badge tone="critical" size="small">
                         ❌ Errores
                       </s-badge>
                     </s-stack>
                   </s-box>
-                  )}
-  
+
                   {/* TOTAL PROCESADOS */}
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
@@ -514,7 +515,7 @@ export default function Index() {
                         {syncState?.processedItems || 0}
                       </s-text>
                       <s-badge size="small">
-                        📊 Total
+                        📊 Procesados
                       </s-badge>
                     </s-stack>
                   </s-box>

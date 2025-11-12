@@ -2123,7 +2123,19 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
 // MAIN PROCESSOR WITH VARIANTS SUPPORT (ORIGINAL)
 // =============================================================================
 export async function processProductsWithDuplicateCheck(admin, products, shop) {
-  const stats = { created: 0, updated: 0, errors: 0, processed: 0, variants: 0 };
+  const stats = {
+    created: 0,
+    updated: 0,
+    errors: 0,
+    processed: 0,
+    variants: 0,
+    totalProducts: products.length,
+    productsProcessed: 0,
+    productsCreated: 0,
+    productsUpdated: 0,
+    productsOmitted: 0,
+    productsWithErrors: 0
+  };
   const cache = new Map();
   // Paso 1: Agrupar productos por variantes
   const variantGroups = groupProductsByVariants(products);
@@ -2155,7 +2167,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           processed: stats.processed,
           total: variantGroups.size,
           variants: isVariantGroup ? variants.length : 1,
-          currentStep: isVariantGroup ? `Procesando variantes (${variants.length})` : "Procesando producto"
+          currentStep: isVariantGroup ? `Procesando variantes (${variants.length})` : "Procesando producto",
+          totalProducts: stats.totalProducts,
+          productsProcessed: stats.productsProcessed,
+          productsCreated: stats.productsCreated,
+          productsUpdated: stats.productsUpdated,
+          productsOmitted: stats.productsOmitted,
+          productsWithErrors: stats.productsWithErrors
         });
       }
       // Buscar si el producto ya existe (usar producto maestro para búsqueda)
@@ -2166,6 +2184,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
         result = await updateShopifyProduct(admin, existing, masterProduct);
         if (result.success) {
           stats.updated++;
+          stats.productsUpdated++;
+          stats.productsProcessed++;
           // Enviar evento de actualización
           if (shop) {
             await sendProgressEvent(shop, {
@@ -2174,7 +2194,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
               productId: existing.id,
               processed: stats.processed + 1,
               total: variantGroups.size,
-              variants: isVariantGroup ? variants.length : 1
+              variants: isVariantGroup ? variants.length : 1,
+              totalProducts: stats.totalProducts,
+              productsProcessed: stats.productsProcessed,
+              productsCreated: stats.productsCreated,
+              productsUpdated: stats.productsUpdated,
+              productsOmitted: stats.productsOmitted,
+              productsWithErrors: stats.productsWithErrors
             });
           }
         }
@@ -2186,6 +2212,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           if (result.success) {
             stats.created++;
             stats.variants += variants.length;
+            stats.productsCreated++;
+            stats.productsProcessed++;
             // Enviar evento de creación con variantes
             if (shop) {
               await sendProgressEvent(shop, {
@@ -2195,7 +2223,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
                 processed: stats.processed + 1,
                 total: variantGroups.size,
                 variants: variants.length,
-                variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
+                variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color })),
+                totalProducts: stats.totalProducts,
+                productsProcessed: stats.productsProcessed,
+                productsCreated: stats.productsCreated,
+                productsUpdated: stats.productsUpdated,
+                productsOmitted: stats.productsOmitted,
+                productsWithErrors: stats.productsWithErrors
               });
             }
           }
@@ -2204,6 +2238,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           result = await createShopifyProduct(admin, masterProduct);
           if (result.success) {
             stats.created++;
+            stats.productsCreated++;
+            stats.productsProcessed++;
             // Enviar evento de creación simple
             if (shop) {
               await sendProgressEvent(shop, {
@@ -2212,7 +2248,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
                 productId: result.product?.id,
                 processed: stats.processed + 1,
                 total: variantGroups.size,
-                variants: 1
+                variants: 1,
+                totalProducts: stats.totalProducts,
+                productsProcessed: stats.productsProcessed,
+                productsCreated: stats.productsCreated,
+                productsUpdated: stats.productsUpdated,
+                productsOmitted: stats.productsOmitted,
+                productsWithErrors: stats.productsWithErrors
               });
             }
           }
@@ -2220,6 +2262,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       }
       if (!result.success) {
         stats.errors++;
+        stats.productsWithErrors++;
+        stats.productsProcessed++;
         if (CONFIG.LOG) {
           log(`❌ Error procesando grupo ${groupId}: ${result.error}`);
         }
@@ -2231,7 +2275,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
             processed: stats.processed + 1,
             total: variantGroups.size,
             error: result.error,
-            variants: isVariantGroup ? variants.length : 1
+            variants: isVariantGroup ? variants.length : 1,
+            totalProducts: stats.totalProducts,
+            productsProcessed: stats.productsProcessed,
+            productsCreated: stats.productsCreated,
+            productsUpdated: stats.productsUpdated,
+            productsOmitted: stats.productsOmitted,
+            productsWithErrors: stats.productsWithErrors
           });
         }
       }
@@ -2239,6 +2289,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       await sleep(CONFIG.RATE_LIMIT_DELAY);
     } catch (err) {
       stats.errors++;
+      stats.productsWithErrors++;
+      stats.productsProcessed++;
       log(`❌ Error procesando grupo ${groupId}: ${err.message}`);
       // Enviar evento de error de excepción
       if (shop) {
@@ -2247,7 +2299,13 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           productTitle: "Error de procesamiento",
           processed: stats.processed + 1,
           total: variantGroups.size,
-          error: err.message
+          error: err.message,
+          totalProducts: stats.totalProducts,
+          productsProcessed: stats.productsProcessed,
+          productsCreated: stats.productsCreated,
+          productsUpdated: stats.productsUpdated,
+          productsOmitted: stats.productsOmitted,
+          productsWithErrors: stats.productsWithErrors
         });
       }
     }
@@ -2256,7 +2314,12 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
   const finalStats = {
     ...stats,
     totalVariantGroups: variantGroups.size,
-    totalProducts: products.length,
+    totalProducts: stats.totalProducts,
+    productsProcessed: stats.productsProcessed,
+    productsCreated: stats.productsCreated,
+    productsUpdated: stats.productsUpdated,
+    productsOmitted: stats.productsOmitted,
+    productsWithErrors: stats.productsWithErrors
   };
   // Enviar evento de finalización
   if (shop) {
@@ -2264,6 +2327,12 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       type: "sync_completed",
       message: "Sincronización completada",
       stats: finalStats,
+      totalProducts: stats.totalProducts,
+      productsProcessed: stats.productsProcessed,
+      productsCreated: stats.productsCreated,
+      productsUpdated: stats.productsUpdated,
+      productsOmitted: stats.productsOmitted,
+      productsWithErrors: stats.productsWithErrors,
       endTime: new Date().toISOString()
     });
   }
