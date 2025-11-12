@@ -1,0 +1,147 @@
+/* Importar estilos de Polaris */
+@import '@shopify/polaris/build/esm/styles.css';
+
+/* Estilos globales para toda la aplicación */
+
+:root {
+    --xml-primary-color: #007ace;
+    --xml-success-color: #28a745;
+    --xml-error-color: #dc3545;
+    --xml-background: #f8f9fa;
+    --xml-border-radius: 8px;
+}
+
+/* Aplicar a toda la app */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: var(--xml-background);
+}
+
+/* Estilos específicos para la aplicación XML */
+.xml-app {
+    min-height: 100vh;
+    padding: 1rem;
+}
+
+/* Mejoras para componentes Polaris */
+.Polaris-Button--primary {
+    transition: all 0.3s ease-in-out !important;
+}
+
+.Polaris-Button--primary:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 12px rgba(0, 122, 206, 0.3) !important;
+}
+
+.Polaris-Button--loading {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+
+    100% {
+        opacity: 1;
+    }
+}
+
+/* Estilos para el formulario */
+.Polaris-TextField__Input {
+    transition: border-color 0.2s ease;
+}
+
+.Polaris-TextField__Input:focus {
+    border-color: var(--xml-primary-color) !important;
+    box-shadow: 0 0 0 1px var(--xml-primary-color) !important;
+}
+
+/* Estilos para resultados */
+.xml-results {
+    margin-top: 1.5rem;
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.xml-results .Polaris-Badge {
+    margin-right: 0.75rem;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+
+.xml-results .Polaris-Badge--toneSuccess {
+    background-color: var(--xml-success-color);
+}
+
+.xml-results .Polaris-Badge--toneCritical {
+    background-color: var(--xml-error-color);
+}
+
+/* Mejoras para las cards */
+.Polaris-Card {
+    border-radius: var(--xml-border-radius);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: box-shadow 0.3s ease;
+}
+
+.Polaris-Card:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+/* Estilos para banners */
+.Polaris-Banner--toneWarning {
+    border-left: 4px solid #ffa500;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .xml-app {
+        padding: 0.5rem;
+    }
+
+    .Polaris-InlineStack {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .Polaris-InlineStack>* {
+        margin-bottom: 0.5rem;
+    }
+}
+
+/* Scroll personalizado */
+.xml-preview::-webkit-scrollbar {
+    width: 8px;
+}
+
+.xml-preview::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.xml-preview::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+.xml-preview::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}

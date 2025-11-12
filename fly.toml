@@ -1,0 +1,38 @@
+# fly.toml app configuration file generated for sync-app on 2025-11-11T22:06:02+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'sync-app'
+primary_region = 'cdg'
+
+[build]
+
+[env]
+  PORT = '3000'
+  SCOPES = 'write_inventory,write_products'
+  SHOPIFY_API_KEY = '14a7d08c14917d8c0615c00574fc01fc'
+  SHOPIFY_APP_URL = 'https://sync-app.fly.dev'
+
+[processes]
+  app = 'node ./dbsetup.js npm run docker-start'
+
+[[mounts]]
+  source = 'data'
+  destination = '/data'
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = '1GB'
+  auto_extend_size_limit = '10GB'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

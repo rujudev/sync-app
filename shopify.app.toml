@@ -1,0 +1,33 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+application_url = "https://sync-app.fly.dev"
+client_id = "14a7d08c14917d8c0615c00574fc01fc"
+embedded = true
+name = "Sync App"
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2025-10"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = ["app/scopes_update"]
+uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+optional_scopes = []
+scopes = "write_products,write_inventory"
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://sync-app.fly.dev/auth/callback",
+  "https://sync-app.fly.dev/auth/shopify/callback",
+  "https://sync-app.fly.dev/api/auth/callback",
+]
