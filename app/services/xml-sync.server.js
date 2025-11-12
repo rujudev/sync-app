@@ -1997,6 +1997,7 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       const sendProgressFn = shop ? (type, message) => sendProgressEvent(shop, { type, message }) : null;
       result = await updateExistingProduct(admin, existing, variants, sendProgressFn);
       
+      console.log('@@@ variants ', variants)
       if (result) {
         // Enviar evento de actualización
         if (shop) {
@@ -2381,10 +2382,10 @@ export async function processProductsParallel(admin, products, shop) {
       // Procesar resultados del lote
       for (let j = 0; j < batchResults.length; j++) {
         const result = batchResults[j];
-        const [groupId, variants] = batch[j];
+        const [groupId] = batch[j];
         
-        globalStats.processed += variants.length;
-        stats.processed += variants.length;
+        globalStats.processed += 1;
+        stats.processed += 1;
         
         if (result.status === 'fulfilled' && result.value.success) {
           const action = result.value.action;
