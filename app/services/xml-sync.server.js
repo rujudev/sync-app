@@ -1600,7 +1600,7 @@ async function createProductVariants(admin, product, variants) {
       const seenSignatures = new Set();
       const uniqueVariants = [];
       
-      productSetInput.variants.forEach((variant) => {
+      productSetInput.variants.forEach(variant => {
         const signature = variant.optionValues.map(ov => ov.name).join(' / ');
         if (seenSignatures.has(signature)) {
           log(`   🚫 Eliminando duplicado final: "${signature}" (SKU: ${variant.sku})`);
@@ -1821,11 +1821,6 @@ async function updateDefaultVariant(admin, variantId, p, productId = null) {
       variantForUpdate.optionValues.push({ optionName: "Color", name: p.color });
     }
     
-    // Barcode si es válido
-    if (p.gtin && /^[0-9]{8,}$/.test(p.gtin.toString())) {
-      variantForUpdate.barcode = p.gtin.toString();
-    }
-    
     // Actualizar el producto con las opciones correctas Y la variante
     const updateProductInput = {
       id: actualProductId,
@@ -1980,10 +1975,20 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       await sendProgressEvent(shop, {
         type: "processing",
         productTitle: masterProduct.title,
+        productSku: masterProduct.sku,
+        barcode: masterProduct.gtin,
+        price: masterProduct.price,
+        vendor: masterProduct.vendor,
+        brand: masterProduct.brand,
+        tags: masterProduct.tags,
+        condition: masterProduct.condition,
+        availability: masterProduct.availability,
+        color: masterProduct.color,
+        productId: masterProduct.id,
+        imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
         processed: globalStats.processed,
         total: globalStats.total,
-        variants: isVariantGroup ? variants.length : 1,
-        currentStep: isVariantGroup ? `Procesando variantes (${variants.length})` : "Procesando producto"
+        action: "processing"
       });
     }
     
@@ -1996,20 +2001,30 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       // Actualizar producto existente con nuevas variantes
       const sendProgressFn = shop ? (type, message) => sendProgressEvent(shop, { type, message }) : null;
       result = await updateExistingProduct(admin, existing, variants, sendProgressFn);
-      
-      console.log('@@@ variants ', variants)
+    
       if (result) {
         // Enviar evento de actualización
         if (shop) {
           await sendProgressEvent(shop, {
             type: "updated",
             productTitle: masterProduct.title,
+            productSku: masterProduct.sku,
+            barcode: masterProduct.gtin,
+            price: masterProduct.price,
+            vendor: masterProduct.vendor,
+            brand: masterProduct.brand,
+            tags: masterProduct.tags,
+            condition: masterProduct.condition,
+            availability: masterProduct.availability,
+            color: masterProduct.color,
             productId: existing.id,
+            imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
             processed: globalStats.processed + 1,
             total: globalStats.total,
             variants: variants.length,
             variantsUpdated: result.variantsUpdated || 0,
-            variantsCreated: result.variantsCreated || 0
+            variantsCreated: result.variantsCreated || 0,
+            action: "updated"
           });
         }
         
@@ -2032,52 +2047,47 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
         // Crear producto con múltiples variantes
         result = await createShopifyProductWithVariants(admin, variants);
         if (result.success) {
-          
           // Enviar evento de creación con variantes
           if (shop) {
             await sendProgressEvent(shop, {
               type: "created",
               productTitle: masterProduct.title,
               productId: result.product?.id,
+              imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
               processed: globalStats.processed + 1,
               total: globalStats.total,
               variants: variants.length,
               variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
             });
           }
-          
           // Actualizar estadísticas
           globalStats.created++;
           globalStats.variantsCreated += variants.length;
-          
           return { success: true, action: 'created', variants: variants.length };
         }
       } else {
         // Crear producto simple
         result = await createShopifyProduct(admin, masterProduct);
         if (result.success) {
-          
           // Enviar evento de creación simple
           if (shop) {
             await sendProgressEvent(shop, {
               type: "created",
               productTitle: masterProduct.title,
               productId: result.product?.id,
+              imageUrl: masterProduct.image_link || null,
               processed: globalStats.processed + 1,
               total: globalStats.total,
               variants: 1
             });
           }
-          
           // Actualizar estadísticas
           globalStats.created++;
           globalStats.variantsCreated += 1;
-          
           return { success: true, action: 'created', variants: 1 };
         }
       }
     }
-    
     // Si llegamos aquí, algo falló
     if (!result.success) {
       // Enviar evento de error
@@ -2091,13 +2101,10 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
           variants: isVariantGroup ? variants.length : 1
         });
       }
-      
       return { success: false, error: result.error };
     }
-
   } catch (err) {
     log(`❌ Error procesando grupo ${groupId}: ${err.message}`);
-    
     // Enviar evento de error de excepción
     if (shop) {
       await sendProgressEvent(shop, {
@@ -2108,60 +2115,21 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
         error: err.message
       });
     }
-    
     return { success: false, error: err.message };
   }
 }
 
-// function normalizeVariantOptionValues(productOptions, variantOptionValues) {
-//   const map = Object.fromEntries(
-//     (variantOptionValues || []).map(ov => [ov.optionName, ov.name])
-//   );
-
-//   const CONDITIONS = {
-//     "new": "Nuevo",
-//     "refurbished": "Reacondicionado",
-//     "used": "Usado"
-//   };
-
-//   return productOptions.map(opt => {
-//     if (opt.name === "Capacidad") {
-//       // extraer capacidad si no viene en variantOptionValues
-//       const extracted = map["Capacidad"] || "Estándar";
-//       return { optionName: "Capacidad", name: extracted };
-//     }
-
-//     if (opt.name === "Condición") {
-//       const raw = map["Condición"] || "new";
-//       const resolved = CONDITIONS[raw] || raw;
-//       return { optionName: "Condición", name: resolved };
-//     }
-
-//     if (opt.name === "Color") {
-//       const color = map["Color"] || "Sin especificar";
-//       return { optionName: "Color", name: color };
-//     }
-
-//     // fallback for any non-expected option
-//     return { optionName: opt.name, name: map[opt.name] || "Sin especificar" };
-//   });
-// }
-
 // =============================================================================
 // MAIN PROCESSOR WITH VARIANTS SUPPORT (ORIGINAL)
 // =============================================================================
-
 export async function processProductsWithDuplicateCheck(admin, products, shop) {
   const stats = { created: 0, updated: 0, errors: 0, processed: 0, variants: 0 };
   const cache = new Map();
-  
   // Paso 1: Agrupar productos por variantes
   const variantGroups = groupProductsByVariants(products);
-  
   if (CONFIG.LOG) {
     log(`🚀 Procesando ${variantGroups.size} grupos de productos`);
   }
-
   // Enviar evento de inicio de sincronización
   if (shop) {
     await sendProgressEvent(shop, {
@@ -2171,17 +2139,14 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       startTime: new Date().toISOString()
     });
   }
-
   for (const [groupId, variants] of variantGroups) {
     try {
       // Determinar si es un grupo de variantes o producto único
       const isVariantGroup = variants.length > 1;
       const masterProduct = isVariantGroup ? selectMasterProduct(variants) : variants[0];
-      
       if (CONFIG.LOG && isVariantGroup) {
         log(`🔄 Procesando grupo de variantes ${groupId}: ${variants.length} variantes`);
       }
-      
       // Enviar evento de procesamiento actual
       if (shop) {
         await sendProgressEvent(shop, {
@@ -2193,17 +2158,14 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           currentStep: isVariantGroup ? `Procesando variantes (${variants.length})` : "Procesando producto"
         });
       }
-      
       // Buscar si el producto ya existe (usar producto maestro para búsqueda)
       const existing = await findExistingProduct(admin, masterProduct, cache);
-      
       let result;
       if (existing) {
         // Actualizar producto existente (por ahora solo el principal)
         result = await updateShopifyProduct(admin, existing, masterProduct);
         if (result.success) {
           stats.updated++;
-          
           // Enviar evento de actualización
           if (shop) {
             await sendProgressEvent(shop, {
@@ -2224,7 +2186,6 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           if (result.success) {
             stats.created++;
             stats.variants += variants.length;
-            
             // Enviar evento de creación con variantes
             if (shop) {
               await sendProgressEvent(shop, {
@@ -2243,7 +2204,6 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           result = await createShopifyProduct(admin, masterProduct);
           if (result.success) {
             stats.created++;
-            
             // Enviar evento de creación simple
             if (shop) {
               await sendProgressEvent(shop, {
@@ -2258,13 +2218,11 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           }
         }
       }
-      
       if (!result.success) {
         stats.errors++;
         if (CONFIG.LOG) {
           log(`❌ Error procesando grupo ${groupId}: ${result.error}`);
         }
-        
         // Enviar evento de error
         if (shop) {
           await sendProgressEvent(shop, {
@@ -2277,14 +2235,11 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           });
         }
       }
-
       stats.processed++;
-
       await sleep(CONFIG.RATE_LIMIT_DELAY);
     } catch (err) {
       stats.errors++;
       log(`❌ Error procesando grupo ${groupId}: ${err.message}`);
-      
       // Enviar evento de error de excepción
       if (shop) {
         await sendProgressEvent(shop, {
@@ -2297,14 +2252,12 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       }
     }
   }
-
   // Estadísticas finales
   const finalStats = {
     ...stats,
     totalVariantGroups: variantGroups.size,
     totalProducts: products.length,
   };
-
   // Enviar evento de finalización
   if (shop) {
     await sendProgressEvent(shop, {
@@ -2314,7 +2267,6 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
       endTime: new Date().toISOString()
     });
   }
-
   log("✅ Sincronización finalizada:", finalStats);
   return finalStats;
 }
@@ -2322,26 +2274,15 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
 // =============================================================================
 // OPTIMIZED PARALLEL PROCESSOR
 // =============================================================================
-
-/**
- * Versión optimizada con procesamiento paralelo de hasta 6 productos simultáneos
- * @param {Object} admin - Cliente admin de Shopify  
- * @param {Array} products - Lista de productos a procesar
- * @param {string} shop - Dominio de la tienda para eventos
- * @returns {Object} - Estadísticas finales
- */
 export async function processProductsParallel(admin, products, shop) {
   const stats = { created: 0, updated: 0, errors: 0, processed: 0, variants: 0 };
   const cache = new Map();
-  
   // Paso 1: Agrupar productos por variantes
   const variantGroups = groupProductsByVariants(products);
   const groupEntries = Array.from(variantGroups.entries());
-  
   if (CONFIG.LOG) {
     log(`🚀 [PARALLEL] Procesando ${variantGroups.size} grupos con lotes de ${CONFIG.PARALLEL_BATCH_SIZE}`);
   }
-
   // Enviar evento de inicio de sincronización
   if (shop) {
     await sendProgressEvent(shop, {
@@ -2351,7 +2292,6 @@ export async function processProductsParallel(admin, products, shop) {
       startTime: new Date().toISOString()
     });
   }
-
   // Estadísticas globales compartidas para eventos
   const globalStats = { 
     processed: 0, 
@@ -2362,31 +2302,24 @@ export async function processProductsParallel(admin, products, shop) {
     variantsUpdated: 0,
     errors: 0
   };
-
   // Procesar en lotes paralelos
   for (let i = 0; i < groupEntries.length; i += CONFIG.PARALLEL_BATCH_SIZE) {
     const batch = groupEntries.slice(i, i + CONFIG.PARALLEL_BATCH_SIZE);
-    
     if (CONFIG.LOG) {
       log(`📦 [PARALLEL] Procesando lote ${Math.floor(i / CONFIG.PARALLEL_BATCH_SIZE) + 1}/${Math.ceil(groupEntries.length / CONFIG.PARALLEL_BATCH_SIZE)} (${batch.length} grupos)`);
     }
-
     // Procesar el lote en paralelo
     const batchPromises = batch.map(async ([groupId, variants]) => {
       return processVariantGroup(admin, groupId, variants, cache, shop, globalStats);
     });
-
     try {
       const batchResults = await Promise.allSettled(batchPromises);
-      
       // Procesar resultados del lote
       for (let j = 0; j < batchResults.length; j++) {
         const result = batchResults[j];
-        const [groupId] = batch[j];
-        
-        globalStats.processed += 1;
-        stats.processed += 1;
-        
+        const [groupId, variants] = batch[j];
+        globalStats.processed += variants.length;
+        stats.processed += variants.length;
         if (result.status === 'fulfilled' && result.value.success) {
           const action = result.value.action;
           if (action === 'created') {
@@ -2403,18 +2336,15 @@ export async function processProductsParallel(admin, products, shop) {
           }
         }
       }
-
       // Pequeña pausa entre lotes para evitar sobrecarga
       if (i + CONFIG.PARALLEL_BATCH_SIZE < groupEntries.length) {
         await sleep(CONFIG.RATE_LIMIT_DELAY + 200); // Delay adicional de 200ms
       }
-      
     } catch (batchError) {
       log(`❌ [PARALLEL] Error procesando lote: ${batchError.message}`);
       stats.errors += batch.length;
     }
   }
-
   // Estadísticas finales combinando datos de stats y globalStats
   const finalStats = {
     created: globalStats.created || 0,
@@ -2429,7 +2359,6 @@ export async function processProductsParallel(admin, products, shop) {
     processingMode: 'parallel',
     batchSize: CONFIG.PARALLEL_BATCH_SIZE
   };
-
   // Enviar evento de finalización
   if (shop) {
     await sendProgressEvent(shop, {
@@ -2439,7 +2368,6 @@ export async function processProductsParallel(admin, products, shop) {
       endTime: new Date().toISOString()
     });
   }
-
   log("✅ [PARALLEL] Sincronización finalizada:", finalStats);
   return finalStats;
 }
@@ -2447,25 +2375,20 @@ export async function processProductsParallel(admin, products, shop) {
 // =============================================================================
 // XML FROM URL → PARSE + OPTIONAL SYNC
 // =============================================================================
-
 export async function parseXMLData(xmlUrl, admin, shop) {
   log(`🌐 Descargando XML: ${xmlUrl}`);
   const res = await fetch(xmlUrl);
   if (!res.ok) throw new Error(`XML error: ${res.status}`);
-
   const xml = await res.text();
   const parser = new XMLParser({ ignoreAttributes: false });
   const parsed = parser.parse(xml);
-
   const items = parsed?.rss?.channel?.item || [];
   if (!items.length) {
     log("⚠️ XML vacío");
     return [];
   }
-
   const products = items.map(parseXmlProduct);
   log(`📦 Productos parseados: ${products.length}`);
-
   // Mostrar estadísticas de variantes
   const variantGroups = groupProductsByVariants(products);
   const variantStats = {
@@ -2475,9 +2398,7 @@ export async function parseXMLData(xmlUrl, admin, shop) {
     multiVariantGroups: [...variantGroups.values()].filter(group => group.length > 1).length,
   };
   log(`📊 Estadísticas de variantes:`, variantStats);
-
   if (!admin) return products;
-
   return await processProductsWithDuplicateCheck(admin, products, shop);
 }
 
@@ -2491,7 +2412,6 @@ export async function parseXMLOnly(xmlUrl) {
   const xml = await res.text();
   const parser = new XMLParser({ ignoreAttributes: false });
   const parsed = parser.parse(xml);
-
   const items = parsed?.rss?.channel?.item || [];
   return items.map(parseXmlProduct);
 }

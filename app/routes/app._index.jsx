@@ -162,6 +162,19 @@ export default function Index() {
       return newStats;
     });
 
+    const CONDITION = {
+      "new": "Nuevo",
+      "used": "Usado",
+      "refurbished": "Reacondicionado"
+    }
+
+    const ACTION = {
+      "created": "Creado",
+      "updated": "Actualizado",
+      "error": "Error",
+      "product_error": "Error"
+    }
+
     // Agregar producto a la tabla principal
     setProcessedProducts(prev => {
       const prevArray = prev || [];
@@ -169,20 +182,20 @@ export default function Index() {
         id: data.productId || `${Date.now()}_${Math.random()}`,
         title: data.productTitle,
         sku: data.productSku,
-        type: type,
-        action: type === 'created' ? 'Creado' : 
-                type === 'updated' ? 'Actualizado' : 
-                type === 'error' || type === 'product_error' ? 'Error' : 'Omitido',
-        timestamp: new Date().toLocaleString('es-ES'),
+        imageUrl: data.imageUrl,
+        barcode: data.barcode || 'N/A',
         price: data.price || 'N/A',
         vendor: data.vendor || 'Sin marca',
+        brand: data.brand || '',
         tags: data.tags || '',
-        condition: data.condition || 'nuevo',
-        deviceType: data.deviceType || 'android',
-        availability: data.availability || 'in_stock',
-        timing: data.timing,
-        errorMessage: data.error || null, // Para productos con errores
-        variants: data.variants || [] // Para mostrar variantes
+        color: data.color || '',
+        condition: CONDITION[data.condition] || 'Nuevo',
+        availability: data.availability || 'unknown',
+        type: type,
+        action: ACTION[type] || 'Omitido',
+        timestamp: new Date().toLocaleString('es-ES'),
+        errorMessage: data.error || null,
+        // ...otros campos si los necesitas
       };
       
       return [productData, ...prevArray];
@@ -628,116 +641,151 @@ export default function Index() {
                 <s-table>
                   <s-table-header-row>
                       <s-table-header></s-table-header>
-                      <s-table-header>Producto</s-table-header>
-                      <s-table-header>SKU</s-table-header>
-                      <s-table-header>Acción</s-table-header>
-                      <s-table-header>Marca</s-table-header>
-                      <s-table-header>Estado</s-table-header>
-                      <s-table-header>Proveedor</s-table-header>
-                      <s-table-header>Disponibilidad</s-table-header>
+                      <s-table-header listSlot="primary">Producto</s-table-header>
+                      <s-table-header listSlot="kicker">SKU</s-table-header>
+                      <s-table-header listSlot="kicker">Barcode</s-table-header>
+                      <s-table-header listSlot="labeled" format="currency">Precio</s-table-header>
+                      <s-table-header listSlot="inline">Acción</s-table-header>
+                      <s-table-header listSlot="inline">Marca</s-table-header>
+                      <s-table-header listSlot="inline">Color</s-table-header>
+                      <s-table-header listSlot="inline">Condición</s-table-header>
+                      <s-table-header listSlot="inline">Disponibilidad</s-table-header>
                   </s-table-header-row>
                   <s-table-body>
-                    {(currentProducts || []).map((product) => (
-                      <React.Fragment key={product.id}>
-                        <s-table-row>
-                          <s-table-cell>
-                            <s-image
-                              src="https://cdn.shopify.com/static/images/polaris/image-wc_src.png"
-                              alt="Four pixelated characters ready to build amazing Shopify apps"
-                              inlineSize="auto"
-                            />
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-text variant="body-sm" fontWeight="semibold">
-                              {product.title}
-                            </s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.sku || 'N/A'}
-                            </s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-badge 
-                              tone={
-                                product.type === 'created' ? 'success' : 
-                                product.type === 'updated' ? 'info' : 
-                                product.type === 'product_error' ? 'critical' : 'neutral'
-                              }
-                            >
-                              {product.action}
-                            </s-badge>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.deviceType}
-                            </s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-text variant="body-sm">
-                              {product.condition}
-                            </s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-text variant="body-sm">
-                              {product.vendor || 'Sin marca'}
-                            </s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
-                              {product.availability === 'in_stock' ? 'En stock' : 'Agotado'}
-                            </s-badge>
-                          </s-table-cell>
-                        </s-table-row>
-                      </React.Fragment>
-                    ))}
+                    {(currentProducts || []).map((product) => {
+                      console.log(product)
+                      return (
+                        <React.Fragment key={product.id}>
+                          <s-table-row>
+                            {/* Imagen */}
+                            <s-table-cell>
+                              <s-image 
+                                src={product.imageUrl} 
+                                alt={product.title}
+                                inlineSize="fill"
+                              />
+                            </s-table-cell>
+
+                            {/* Título */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" fontWeight="semibold">
+                                {product.title}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* SKU */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" tone="subdued">
+                                {product.sku || 'N/A'}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Barcode */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" tone="subdued">
+                                {product.barcode || 'N/A'}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Precio */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" tone="subdued">
+                                {product.price || 'N/A'}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Acción */}
+                            <s-table-cell>
+                              <s-badge 
+                                tone={
+                                  product.type === 'created' ? 'success' : 
+                                  product.type === 'updated' ? 'info' : 
+                                  product.type === 'product_error' ? 'critical' : 'neutral'
+                                }
+                              >
+                                {product.action}
+                              </s-badge>
+                            </s-table-cell>
+
+                            {/* Marca */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" tone="subdued">
+                                {product.brand || 'N/A'}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Color */}
+                            <s-table-cell>
+                              <s-text variant="body-sm" tone="subdued">
+                                {product.color || 'N/A'}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Condición */}
+                            <s-table-cell>
+                              <s-text variant="body-sm">
+                                {product.condition}
+                              </s-text>
+                            </s-table-cell>
+
+                            {/* Disponibilidad */}
+                            <s-table-cell>
+                              <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
+                                {product.availability === 'in_stock' ? 'En stock' : 'Agotado'}
+                              </s-badge>
+                            </s-table-cell>
+                          </s-table-row>
+                        </React.Fragment>
+                      )}
+                    )}
                   </s-table-body>
                 </s-table>
 
                 {/* PAGINACIÓN */}
-                {totalPages > 1 && (
-                  <s-stack gap="base" direction="inline" alignment="space-between">
-                    <s-button
-                      variant="tertiary"
-                      onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                      disabled={currentPage === 1}
-                    >
-                      ← Anterior
-                    </s-button>
-                    
-                    <s-stack gap="tight" direction="inline">
-                      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                        const pageNum = Math.max(1, currentPage - 2) + i;
-                        if (pageNum <= totalPages) {
-                          return (
-                            <s-button
-                              key={pageNum}
-                              variant={currentPage === pageNum ? "primary" : "tertiary"}
-                              size="slim"
-                              onClick={() => setCurrentPage(pageNum)}
-                            >
-                              {pageNum}
-                            </s-button>
-                          );
-                        }
-                        return null;
-                      })}
-                    </s-stack>
-
-                    <s-button
-                      variant="tertiary"
-                      onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                      disabled={currentPage === totalPages}
-                    >
-                      Siguiente →
-                    </s-button>
+                <s-stack rowGap="large" direction="inline" alignItems="center" justifyContent="space-between">
+                  <s-stack alignment="center">
+                    <s-text variant="caption" tone="subdued">
+                      Mostrando {startIndex + 1} - {Math.min(endIndex, processedProducts?.length || 0)} de {processedProducts?.length || 0} productos
+                    </s-text>
                   </s-stack>
-                )}
+                  {totalPages > 1 && (
+                    <s-stack gap="base" direction="inline">
+                      <s-button
+                        variant="tertiary"
+                        onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                        disabled={currentPage === 1}
+                      >
+                        ← Anterior
+                      </s-button>
+                      
+                      <s-stack gap="tight" direction="inline">
+                        {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                          const pageNum = Math.max(1, currentPage - 2) + i;
+                          if (pageNum <= totalPages) {
+                            return (
+                              <s-button
+                                key={pageNum}
+                                variant={currentPage === pageNum ? "primary" : "tertiary"}
+                                size="slim"
+                                onClick={() => setCurrentPage(pageNum)}
+                              >
+                                {pageNum}
+                              </s-button>
+                            );
+                          }
+                          return null;
+                        })}
+                      </s-stack>
 
-                <s-stack alignment="center">
-                  <s-text variant="caption" tone="subdued">
-                    Mostrando {startIndex + 1} - {Math.min(endIndex, processedProducts?.length || 0)} de {processedProducts?.length || 0} productos
-                  </s-text>
+                      <s-button
+                        variant="tertiary"
+                        onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                        disabled={currentPage === totalPages}
+                      >
+                        Siguiente →
+                      </s-button>
+                    </s-stack>
+                  )}
                 </s-stack>
               </s-stack>
             </s-card>
