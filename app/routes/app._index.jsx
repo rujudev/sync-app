@@ -120,6 +120,7 @@ export default function Index() {
 
   // Función unificada para actualizar el estado del sync
   const updateSyncState = (data, type) => {
+    console.log({ data })
     setSyncState(prev => {
       const newProduct = {
         id: Date.now() + Math.random(),
@@ -695,7 +696,7 @@ export default function Index() {
 
                 {/* PAGINACIÓN */}
                 {totalPages > 1 && (
-                  <s-stack gap="base" horizontal alignment="space-between">
+                  <s-stack gap="base" direction="inline" alignment="space-between">
                     <s-button
                       variant="tertiary"
                       onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
@@ -704,7 +705,7 @@ export default function Index() {
                       ← Anterior
                     </s-button>
                     
-                    <s-stack gap="tight" horizontal>
+                    <s-stack gap="tight" direction="inline">
                       {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                         const pageNum = Math.max(1, currentPage - 2) + i;
                         if (pageNum <= totalPages) {
