@@ -2108,25 +2108,27 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       result = await updateExistingProduct(admin, existing, variants, sendProgressFn);
     
       if (result) {
-        // Enviar evento de actualización
-        if (shop) {
+        // Enviar evento de actualización con datos reales del producto procesado
+        if (shop && result.product) {
+          const p = result.product;
+          const mainVariant = p.variants?.edges?.[0]?.node || {};
           await sendProgressEvent(shop, {
             type: "updated",
-            productTitle: masterProduct.title,
-            productSku: masterProduct.sku,
-            barcode: masterProduct.gtin,
-            price: masterProduct.price,
-            vendor: masterProduct.vendor,
-            brand: masterProduct.brand,
-            tags: masterProduct.tags,
-            condition: masterProduct.condition,
-            availability: masterProduct.availability,
-            color: masterProduct.color,
-            productId: existing.id,
-            imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
+            productTitle: p.title || masterProduct.title,
+            productSku: mainVariant.sku || masterProduct.sku,
+            barcode: mainVariant.barcode || masterProduct.gtin,
+            price: mainVariant.price || masterProduct.price,
+            vendor: p.vendor || masterProduct.vendor,
+            brand: p.brand || masterProduct.brand,
+            tags: p.tags || masterProduct.tags,
+            condition: mainVariant.condition || masterProduct.condition,
+            availability: p.availability || masterProduct.availability,
+            color: mainVariant.color || masterProduct.color,
+            productId: p.id || existing.id,
+            imageUrl: p.imageUrl || masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
             processed: globalStats.processed + 1,
             total: globalStats.total,
-            variants: variants.length,
+            variants: Array.isArray(p.variants) ? p.variants.length : variants.length,
             variantsUpdated: result.variantsUpdated || 0,
             variantsCreated: result.variantsCreated || 0,
             action: "updated"
@@ -2151,17 +2153,28 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       if (isVariantGroup) {
         // Crear producto con múltiples variantes
         result = await createShopifyProductWithVariants(admin, variants);
-        if (result.success) {
-          // Enviar evento de creación con variantes
+        if (result.success && result.product) {
+          // Enviar evento de creación con variantes usando datos reales
+          const p = result.product;
+          const mainVariant = p.variants?.edges?.[0]?.node || {};
           if (shop) {
             await sendProgressEvent(shop, {
               type: "created",
-              productTitle: masterProduct.title,
-              productId: result.product?.id,
-              imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
+              productTitle: p.title || masterProduct.title,
+              productSku: mainVariant.sku || masterProduct.sku,
+              barcode: mainVariant.barcode || masterProduct.gtin,
+              price: mainVariant.price || masterProduct.price,
+              vendor: p.vendor || masterProduct.vendor,
+              brand: p.brand || masterProduct.brand,
+              tags: p.tags || masterProduct.tags,
+              condition: mainVariant.condition || masterProduct.condition,
+              availability: p.availability || masterProduct.availability,
+              color: mainVariant.color || masterProduct.color,
+              productId: p.id,
+              imageUrl: p.imageUrl || masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
               processed: globalStats.processed + 1,
               total: globalStats.total,
-              variants: variants.length,
+              variants: Array.isArray(p.variants) ? p.variants.length : variants.length,
               variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
             });
           }
@@ -2173,17 +2186,28 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
       } else {
         // Crear producto simple
         result = await createShopifyProduct(admin, masterProduct);
-        if (result.success) {
-          // Enviar evento de creación simple
+        if (result.success && result.product) {
+          // Enviar evento de creación simple usando datos reales
+          const p = result.product;
+          const mainVariant = p.variants?.edges?.[0]?.node || {};
           if (shop) {
             await sendProgressEvent(shop, {
               type: "created",
-              productTitle: masterProduct.title,
-              productId: result.product?.id,
-              imageUrl: masterProduct.image_link || null,
+              productTitle: p.title || masterProduct.title,
+              productSku: mainVariant.sku || masterProduct.sku,
+              barcode: mainVariant.barcode || masterProduct.gtin,
+              price: mainVariant.price || masterProduct.price,
+              vendor: p.vendor || masterProduct.vendor,
+              brand: p.brand || masterProduct.brand,
+              tags: p.tags || masterProduct.tags,
+              condition: mainVariant.condition || masterProduct.condition,
+              availability: p.availability || masterProduct.availability,
+              color: mainVariant.color || masterProduct.color,
+              productId: p.id,
+              imageUrl: p.imageUrl || masterProduct.image_link || null,
               processed: globalStats.processed + 1,
               total: globalStats.total,
-              variants: 1
+              variants: Array.isArray(p.variants) ? p.variants.length : 1
             });
           }
           // Actualizar estadísticas

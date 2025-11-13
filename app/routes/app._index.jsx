@@ -30,7 +30,7 @@ const animationStyles = `
 
 export const action = async ({ request }) => {
   console.error('🚨 [ACTION] Action ejecutado - Método:', request.method);
-  
+
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
@@ -38,20 +38,20 @@ export const action = async ({ request }) => {
   try {
     const { session } = await authenticate.admin(request);
     console.error('✅ [ACTION] Autenticación exitosa');
-    
+
     const formData = await request.formData();
     const xmlUrl = formData.get("xmlUrl");
-    
+
     if (!xmlUrl) {
       return Response.json({ error: "URL del XML es requerida" }, { status: 400 });
     }
 
-  // Usar parseXMLData para obtener estadísticas de variantes y estructuración completa
-  const { parseXMLData } = await import("../services/xml-sync.server.js");
-  
-  // Solo parsear (sin admin = solo parsing y estadísticas, no creación en Shopify)
-  const parsedProducts = await parseXMLData(xmlUrl, null, null);
-    
+    // Usar parseXMLData para obtener estadísticas de variantes y estructuración completa
+    const { parseXMLData } = await import("../services/xml-sync.server.js");
+
+    // Solo parsear (sin admin = solo parsing y estadísticas, no creación en Shopify)
+    const parsedProducts = await parseXMLData(xmlUrl, null, null);
+
     if (!parsedProducts || parsedProducts.length === 0) {
       return Response.json({ error: "No se encontraron productos en el XML" }, { status: 400 });
     }
@@ -59,7 +59,7 @@ export const action = async ({ request }) => {
     console.error(`📦 [ACTION] Parseados ${parsedProducts.length} productos con variantes - enviando al cliente`);
 
     const shopDomain = session.shop.replace('.myshopify.com', '');
-    
+
     // Devolver productos parseados al cliente
     return Response.json({
       success: true,
@@ -72,9 +72,9 @@ export const action = async ({ request }) => {
 
   } catch (error) {
     console.error('❌ [ACTION] Error:', error);
-    return Response.json({ 
+    return Response.json({
       error: error.message || "Error parseando XML",
-      success: false 
+      success: false
     }, { status: 500 });
   }
 };
@@ -101,6 +101,18 @@ export default function Index() {
   const [processedProducts, setProcessedProducts] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [productsPerPage] = useState(20);
+  const [eventSourceRef, setEventSourceRef] = useState(null);
+
+  // Función para limpiar todo el estado de importación
+  const resetImportState = () => {
+    setProcessedProducts([]);
+    setCurrentPage(1);
+    setSyncState(null);
+    if (eventSourceRef) {
+      eventSourceRef.close();
+      setEventSourceRef(null);
+    }
+  };
 
   // Cálculo de paginación
   const totalPages = Math.ceil((processedProducts?.length || 0) / productsPerPage);
@@ -132,17 +144,17 @@ export default function Index() {
         sku: data.productSku,
         timing: data.timing
       };
-      
+
       const updatedProducts = prev?.recentProducts ? [newProduct, ...prev.recentProducts.slice(0, 9)] : [newProduct];
-      
+
       // Calcular estadísticas más detalladas con nuevos contadores individuales
       const newStats = {
         processedItems: data.productsProcessed ?? data.processed,
         totalItems: data.totalProducts ?? data.total,
-  createdItems: (data.productsCreated ?? prev?.createdItems) || 0,
-  updatedItems: (data.productsUpdated ?? prev?.updatedItems) || 0,
-  skippedItems: (data.productsOmitted ?? prev?.skippedItems) || 0,
-  errorItems: (data.productsWithErrors ?? prev?.errorItems) || 0,
+        createdItems: (data.productsCreated ?? prev?.createdItems) || 0,
+        updatedItems: (data.productsUpdated ?? prev?.updatedItems) || 0,
+        skippedItems: (data.productsOmitted ?? prev?.skippedItems) || 0,
+        errorItems: (data.productsWithErrors ?? prev?.errorItems) || 0,
         currentStep: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${data.productTitle}`,
         status: 'syncing',
         isActive: true,
@@ -199,7 +211,7 @@ export default function Index() {
         errorMessage: data.error || null,
         // ...otros campos si los necesitas
       };
-      
+
       return [productData, ...prevArray];
     });
   };
@@ -219,6 +231,7 @@ export default function Index() {
     console.warn('🔗 [SSE] URL:', sseUrl);
 
     const eventSource = new EventSource(sseUrl);
+    setEventSourceRef(eventSource);
 
     eventSource.onopen = () => {
       console.warn('🟢 [SSE] Conexión abierta exitosamente');
@@ -236,11 +249,11 @@ export default function Index() {
     eventSource.addEventListener('sync_started', (event) => {
       const data = JSON.parse(event.data);
       console.warn(`🚀 [SSE] ${Date.now()} - SYNC STARTED:`, data.message, '- Total:', data.totalItems);
-      
+
       // Reiniciar tabla de productos
       setProcessedProducts([]);
       setCurrentPage(1);
-      
+
       // Inicializar estado de sync
       setSyncState({
         processedItems: 0,
@@ -260,6 +273,7 @@ export default function Index() {
       const data = JSON.parse(event.data);
       const timestamp = Date.now();
       console.warn(`🆕 [SSE] ${timestamp} - CREATED: ${data.productTitle} (${data.processed}/${data.total})${data.timing ? ` [${data.timing.search + data.timing.create}ms]` : ''}`);
+      console.log({ data })
       updateSyncState(data, 'created');
     });
 
@@ -280,7 +294,7 @@ export default function Index() {
     eventSource.addEventListener('processing', (event) => {
       const data = JSON.parse(event.data);
       console.warn(`⚙️ [SSE] PROCESSING: ${data.productTitle} (${data.processed}/${data.total}) - ${data.currentStep}`);
-      
+
       setSyncState(prev => ({
         ...prev,
         currentStep: data.currentStep,
@@ -307,19 +321,8 @@ export default function Index() {
       const data = JSON.parse(event.data);
       console.warn('🎉 [SSE] SYNC COMPLETED:', data.stats);
 
-      setSyncState(prev => ({
-        ...prev,
-        status: 'completed',
-        currentStep: `Completado: ${data.stats.productsCreated} creados, ${data.stats.productsUpdated} actualizados`,
-        processedItems: data.stats.productsProcessed,
-        createdItems: data.stats.productsCreated,
-        updatedItems: data.stats.productsUpdated,
-        errorItems: data.stats.productsWithErrors,
-        skippedItems: data.stats.productsOmitted,
-        totalItems: data.stats.totalProducts,
-        completedAt: data.endTime,
-        isActive: false
-      }));
+      // Limpiar estado al finalizar importación
+      resetImportState();
     });
 
     return () => {
@@ -331,16 +334,16 @@ export default function Index() {
   // ✨ NUEVO: useEffect que inicia procesamiento cuando recibimos productos del action
   useEffect(() => {
     if (!actionData?.success || !actionData?.products) return;
-    
+
     const startTime = performance.now();
     console.warn(`🎯 [CLIENT] ${Date.now()} - Productos recibidos del action, iniciando procesamiento...`);
     console.warn('🎯 [CLIENT] Productos:', actionData.products.length, 'Shop:', actionData.shopDomain);
-    
+
     // Llamar al endpoint de procesamiento
     const startProcessing = async () => {
       try {
         console.warn(`📤 [CLIENT] ${Date.now()} - Enviando productos para procesamiento...`);
-        
+
         const response = await fetch('/api/process-products', {
           method: 'POST',
           headers: {
@@ -351,33 +354,33 @@ export default function Index() {
             shopDomain: actionData.shopDomain
           })
         });
-        
+
         const result = await response.json();
         const endTime = performance.now();
-        
+
         if (result.success) {
           console.warn(`✅ [CLIENT] ${Date.now()} - Procesamiento iniciado exitosamente (${Math.round(endTime - startTime)}ms)`);
           console.warn('🔄 [CLIENT] Esperando eventos SSE...');
         } else {
           console.error('❌ [CLIENT] Error iniciando procesamiento:', result.error);
         }
-        
+
       } catch (error) {
         console.error('❌ [CLIENT] Error llamando procesamiento:', error);
       }
     };
-    
+
     startProcessing();
-    
+
   }, [actionData]); // ← Se ejecuta cuando actionData cambia
 
 
   return (
     <div className={styles.xmlApp}>
       <style dangerouslySetInnerHTML={{ __html: animationStyles }} />
-      
+
       <s-page heading="Importar Productos desde XML">
-        
+
         {/* SECCIÓN PRINCIPAL DE IMPORTACIÓN */}
         <s-section>
           <s-card>
@@ -389,7 +392,7 @@ export default function Index() {
               </s-stack>
 
               <s-text variant="body-md" tone="subdued">
-                Importa productos desde un feed XML de Google Shopping con procesamiento optimizado en tiempo real. 
+                Importa productos desde un feed XML de Google Shopping con procesamiento optimizado en tiempo real.
                 ⚡ <strong>Hasta 6 productos simultáneos</strong> con cache inteligente y rate limiting.
               </s-text>
 
@@ -405,23 +408,33 @@ export default function Index() {
                     disabled={syncState?.status === 'syncing'}
                   />
 
-                  <s-button
-                    variant="primary"
-                    type="submit"
-                    loading={isLoading}
-                    disabled={isLoading || syncState?.status === 'syncing'}
-                    size="large"
-                  >
-                    {isLoading ? "🔍 Analizando XML..." : 
-                     syncState?.status === 'syncing' ? "🚀 Procesando..." : 
-                     "📥 Importar Productos"}
-                  </s-button>
+                  <s-stack>
+                    <s-button
+                      variant="primary"
+                      type="submit"
+                      loading={isLoading}
+                      disabled={isLoading || syncState?.status === 'syncing'}
+                      size="large"
+                    >
+                      {isLoading ? "🔍 Analizando XML..." :
+                        syncState?.status === 'syncing' ? "🚀 Procesando..." :
+                          "📥 Importar Productos"}
+                    </s-button>
+                    <s-button
+                      variant="critical"
+                      size="large"
+                      onClick={resetImportState}
+                      disabled={!syncState?.isActive}
+                    >
+                      🛑 Cancelar importación
+                    </s-button>
+                  </s-stack>
                 </s-stack>
               </fetcher.Form>
             </s-stack>
           </s-card>
         </s-section>
- 
+
         {/* SECCIÓN DE PROGRESO EN TIEMPO REAL */}
         {syncState?.isActive && (
           <s-section>
@@ -431,8 +444,8 @@ export default function Index() {
                   <s-text variant="heading-sm" fontWeight="semibold">
                     🚀 Procesamiento en Tiempo Real
                   </s-text>
-                  <s-badge 
-                    tone={syncState?.status === 'completed' ? 'success' : 'info'} 
+                  <s-badge
+                    tone={syncState?.status === 'completed' ? 'success' : 'info'}
                     size="small"
                   >
                     {syncState?.status === 'completed' ? '🎉 Completado' : '⚡ En Progreso'}
@@ -441,7 +454,7 @@ export default function Index() {
 
                 {/* BARRA DE PROGRESO VISUAL */}
                 <s-stack rowGap="large">
-                  <ProgressBar 
+                  <ProgressBar
                     progress={((syncState?.processedItems || 0) / (syncState?.totalItems || 1)) * 100}
                     size="small"
                   />
@@ -553,17 +566,17 @@ export default function Index() {
                     {syncState.recentProducts.length} productos recientes
                   </s-badge>
                 </s-stack>
-                
+
                 <s-list>
                   {syncState.recentProducts.map((item) => (
                     <s-list-item key={item.id}>
                       <s-box direction="inline" paddingBlock="base">
                         <s-stack direction="inline" alignItems="stretch" justifyContent="space-between">
-                          <s-badge 
+                          <s-badge
                             tone={
-                              item.type === 'created' ? 'success' : 
-                              item.type === 'updated' ? 'info' : 
-                              item.type === 'product_error' ? 'critical' : 'warning'
+                              item.type === 'created' ? 'success' :
+                                item.type === 'updated' ? 'info' :
+                                  item.type === 'product_error' ? 'critical' : 'warning'
                             }
                             size="small"
                           >
@@ -641,16 +654,16 @@ export default function Index() {
                 {/* TABLA DE PRODUCTOS */}
                 <s-table>
                   <s-table-header-row>
-                      <s-table-header></s-table-header>
-                      <s-table-header listSlot="primary">Producto</s-table-header>
-                      <s-table-header listSlot="kicker">SKU</s-table-header>
-                      <s-table-header listSlot="kicker">Barcode</s-table-header>
-                      <s-table-header listSlot="labeled" format="currency">Precio</s-table-header>
-                      <s-table-header listSlot="inline">Acción</s-table-header>
-                      <s-table-header listSlot="inline">Marca</s-table-header>
-                      <s-table-header listSlot="inline">Color</s-table-header>
-                      <s-table-header listSlot="inline">Condición</s-table-header>
-                      <s-table-header listSlot="inline">Disponibilidad</s-table-header>
+                    <s-table-header></s-table-header>
+                    <s-table-header listSlot="primary">Producto</s-table-header>
+                    <s-table-header listSlot="kicker">SKU</s-table-header>
+                    <s-table-header listSlot="kicker">Barcode</s-table-header>
+                    <s-table-header listSlot="labeled" format="currency">Precio</s-table-header>
+                    <s-table-header listSlot="inline">Acción</s-table-header>
+                    <s-table-header listSlot="inline">Marca</s-table-header>
+                    <s-table-header listSlot="inline">Color</s-table-header>
+                    <s-table-header listSlot="inline">Condición</s-table-header>
+                    <s-table-header listSlot="inline">Disponibilidad</s-table-header>
                   </s-table-header-row>
                   <s-table-body>
                     {(currentProducts || []).map((product) => {
@@ -660,75 +673,66 @@ export default function Index() {
                           <s-table-row>
                             {/* Imagen */}
                             <s-table-cell>
-                              <s-image 
-                                src={product.imageUrl} 
+                              <s-image
+                                src={product.imageUrl}
                                 alt={product.title}
                                 inlineSize="fill"
                               />
                             </s-table-cell>
-
                             {/* Título */}
                             <s-table-cell>
                               <s-text variant="body-sm" fontWeight="semibold">
                                 {product.title}
                               </s-text>
                             </s-table-cell>
-
                             {/* SKU */}
                             <s-table-cell>
                               <s-text variant="body-sm" tone="subdued">
                                 {product.sku || 'N/A'}
                               </s-text>
                             </s-table-cell>
-
                             {/* Barcode */}
                             <s-table-cell>
                               <s-text variant="body-sm" tone="subdued">
                                 {product.barcode || 'N/A'}
                               </s-text>
                             </s-table-cell>
-
                             {/* Precio */}
                             <s-table-cell>
                               <s-text variant="body-sm" tone="subdued">
                                 {product.price || 'N/A'}
                               </s-text>
                             </s-table-cell>
-
                             {/* Acción */}
                             <s-table-cell>
-                              <s-badge 
+                              <s-badge
                                 tone={
-                                  product.type === 'created' ? 'success' : 
-                                  product.type === 'updated' ? 'info' : 
-                                  product.type === 'product_error' ? 'critical' : 'neutral'
+                                  product.type === 'created' ? 'success' :
+                                    product.type === 'updated' ? 'info' :
+                                      product.type === 'product_error' ? 'critical' : 'neutral'
                                 }
                               >
                                 {product.action}
                               </s-badge>
                             </s-table-cell>
-
                             {/* Marca */}
                             <s-table-cell>
                               <s-text variant="body-sm" tone="subdued">
                                 {product.brand || 'N/A'}
                               </s-text>
                             </s-table-cell>
-
                             {/* Color */}
                             <s-table-cell>
                               <s-text variant="body-sm" tone="subdued">
                                 {product.color || 'N/A'}
                               </s-text>
                             </s-table-cell>
-
                             {/* Condición */}
                             <s-table-cell>
                               <s-text variant="body-sm">
                                 {product.condition}
                               </s-text>
                             </s-table-cell>
-
                             {/* Disponibilidad */}
                             <s-table-cell>
                               <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
@@ -737,7 +741,8 @@ export default function Index() {
                             </s-table-cell>
                           </s-table-row>
                         </React.Fragment>
-                      )}
+                      )
+                    }
                     )}
                   </s-table-body>
                 </s-table>
@@ -758,7 +763,7 @@ export default function Index() {
                       >
                         ← Anterior
                       </s-button>
-                      
+
                       <s-stack gap="tight" direction="inline">
                         {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                           const pageNum = Math.max(1, currentPage - 2) + i;
