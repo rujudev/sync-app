@@ -2117,7 +2117,11 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
             productTitle: p.title || masterProduct.title,
             productSku: mainVariant.sku || masterProduct.sku,
             barcode: mainVariant.barcode || masterProduct.gtin,
-            price: mainVariant.price || masterProduct.price,
+            price: (mainVariant.price !== undefined && mainVariant.price !== null)
+              ? parseFloat(mainVariant.price).toFixed(2)
+              : (masterProduct.price !== undefined && masterProduct.price !== null)
+                ? parseFloat(masterProduct.price).toFixed(2)
+                : "N/A",
             vendor: p.vendor || masterProduct.vendor,
             brand: p.brand || masterProduct.brand,
             tags: p.tags || masterProduct.tags,
@@ -2163,7 +2167,11 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
               productTitle: p.title || masterProduct.title,
               productSku: mainVariant.sku || masterProduct.sku,
               barcode: mainVariant.barcode || masterProduct.gtin,
-              price: mainVariant.price || masterProduct.price,
+              price: (mainVariant.price !== undefined && mainVariant.price !== null)
+                ? parseFloat(mainVariant.price).toFixed(2)
+                : (masterProduct.price !== undefined && masterProduct.price !== null)
+                  ? parseFloat(masterProduct.price).toFixed(2)
+                  : "N/A",
               vendor: p.vendor || masterProduct.vendor,
               brand: p.brand || masterProduct.brand,
               tags: p.tags || masterProduct.tags,
@@ -2196,7 +2204,11 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
               productTitle: p.title || masterProduct.title,
               productSku: mainVariant.sku || masterProduct.sku,
               barcode: mainVariant.barcode || masterProduct.gtin,
-              price: mainVariant.price || masterProduct.price,
+              price: (mainVariant.price !== undefined && mainVariant.price !== null)
+                ? parseFloat(mainVariant.price).toFixed(2)
+                : (masterProduct.price !== undefined && masterProduct.price !== null)
+                  ? parseFloat(masterProduct.price).toFixed(2)
+                  : "N/A",
               vendor: p.vendor || masterProduct.vendor,
               brand: p.brand || masterProduct.brand,
               tags: p.tags || masterProduct.tags,
