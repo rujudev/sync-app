@@ -954,9 +954,18 @@ async function findExistingProduct(admin, p, cache) {
 // PRODUCT CREATION WITH VARIANTS
 // Publicar producto en los canales Online Store y Shop
 async function publishProductToChannels(admin, productId) {
-  // Obtener los IDs de los canales de publicación
+  if (!productId) {
+    log('❌ No se puede publicar: productId es inválido o no está definido');
+    return;
+  }
+
+  const gidProductId = productId.startsWith('gid://') 
+    ? productId 
+    : `gid://shopify/Product/${productId}`;
+
+  // Obtener publicaciones
   const PUBLICATIONS_QUERY = `
-    query {
+    query publications {
       publications(first: 10) {
         edges {
           node {
@@ -967,37 +976,54 @@ async function publishProductToChannels(admin, productId) {
       }
     }
   `;
-  const pubsResponse = await admin.graphql(PUBLICATIONS_QUERY);
+
+  const pubsResponse = await withRetry(() => admin.graphql(PUBLICATIONS_QUERY));
   const pubsData = await parseGraphQLResponse(pubsResponse);
+  
   const edges = pubsData?.data?.publications?.edges || [];
-  const channelIds = edges
+  const publicationIds = edges
     .filter(e => e.node.name === 'Online Store' || e.node.name === 'Shop')
     .map(e => e.node.id);
-  if (!channelIds.length) {
+
+  if (!publicationIds.length) {
     log('⚠️ No se encontraron canales Online Store/Shop para publicar');
     return;
   }
-  // Mutation para publicar el producto
+
+  // ✅ MUTACIÓN CORRECTA (dos argumentos separados)
   const PUBLISH_MUTATION = `
-    mutation publishProduct($id: ID!, $channelIds: [ID!]!) {
-      publishablePublish(input: {
-        publishableId: $id,
-        publicationIds: $channelIds
-      }) {
-        publishable { id }
+    mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
         userErrors { field message }
       }
     }
   `;
-  const publishResponse = await admin.graphql(PUBLISH_MUTATION, {
-    variables: { id: productId, channelIds }
-  });
-  const publishData = await parseGraphQLResponse(publishResponse);
-  const errors = publishData?.data?.publishablePublish?.userErrors || [];
-  if (errors.length) {
-    log('⚠️ Errores publicando producto:', errors);
-  } else {
-    log(`✅ Producto publicado en canales: ${channelIds.join(', ')}`);
+
+  try {
+    // Preparar el array de inputs para cada publicación
+    const publicationInputs = publicationIds.map(pubId => ({
+      publicationId: pubId
+    }));
+
+    log(`🚀 Publicando producto ${gidProductId}`);
+    
+    const publishResponse = await admin.graphql(PUBLISH_MUTATION, {
+      variables: { 
+        id: gidProductId,           // Argumento directo
+        input: publicationInputs    // Array de objetos PublicationInput
+      }
+    });
+    
+    const publishData = await parseGraphQLResponse(publishResponse);
+    const errors = publishData?.data?.publishablePublish?.userErrors || [];
+    
+    if (errors.length) {
+      log('⚠️ Errores publicando producto:', errors);
+    } else {
+      log(`✅ Producto publicado exitosamente`);
+    }
+  } catch (err) {
+    log('❌ Excepción al publicar producto:', err.message);
   }
 }
 // =============================================================================
@@ -1144,8 +1170,10 @@ async function createShopifyProductWithVariants(admin, variants) {
       }
     }
 
+    log(`🎉 Producto creado exitosamente: ${createdProduct.title} (ID: ${createdProduct.id})`);
   // Publicar el producto en los canales Online Store y Shop
   await publishProductToChannels(admin, createdProduct.id);
+
   return { success: true, product: createdProduct };
   } catch (error) {
     log(`💥 Excepción creando producto ${title}:`, error.message);
@@ -1778,6 +1806,7 @@ async function createShopifyProduct(admin, p) {
       await updateDefaultVariant(admin, defaultVariant.id, p, createdProduct.id);
     }
 
+log(`🎉 Producto creado exitosamente: ${createdProduct.title} (ID: ${createdProduct.id})`);
   // Publicar el producto en los canales Online Store y Shop
   await publishProductToChannels(admin, createdProduct.id);
   return { success: true, product: createdProduct };
