@@ -424,7 +424,7 @@ function parseXmlProduct(item) {
   if (availabilityInfo.tags) tags.push(...availabilityInfo.tags);
 
   // Marca
-  if (item["g:brand"]) {
+  if (item["g:brand"] && typeof item["g:brand"] === "string") {
     const brandTag = item['g:brand'].toLowerCase() === 'apple' ? 'Apple' : 'Android';
 
     tags.push(brandTag);
@@ -456,7 +456,7 @@ function parseXmlProduct(item) {
   return {
     id: item["g:id"] || null,
     title: item["g:title"] || "Producto sin título",
-    description: item["g:description"] || "",
+    description: item["g:description"].replace('Cosladafon', 'Secondtech') || "",
     // vendor: item["g:brand"] || "Proveedor",
     vendor: "Cosladafon",
     brand: item["g:brand"] || "",
@@ -1007,7 +1007,7 @@ async function createShopifyProductWithVariants(admin, variants) {
   const productOptions = createProductOptions(variants);
   
   // Preparar datos del producto base
-  const title = sanitize(masterProduct.title) || "Producto sin título";
+  const title = sanitize(cleanProductTitleDynamic(masterProduct.title, variants)) || "Producto sin título";
   const vendor = sanitize(masterProduct.vendor) || "Sin marca";
   const description = sanitize(masterProduct.description) || "";
   
@@ -2003,6 +2003,30 @@ async function updateShopifyProduct(admin, existing, p) {
   return { success: true };
 }
 
+function cleanProductTitleDynamic(title, variants) {
+  if (!title) return "Producto sin título";
+  // Extraer colores únicos de las variantes
+  const colorSet = new Set();
+  variants.forEach(v => {
+    if (v.color && typeof v.color === 'string') {
+      colorSet.add(v.color.trim());
+    }
+  });
+  let clean = title;
+  // Eliminar cada color encontrado del título
+  colorSet.forEach(color => {
+    if (color.length > 0) {
+      // Elimina el color como palabra completa, insensible a mayúsculas
+      const regex = new RegExp(`\\b${color}\\b`, 'gi');
+      clean = clean.replace(regex, '');
+    }
+  });
+  // Elimina patrones de capacidad (ej: 128GB, 512GB, 1TB, etc)
+  clean = clean.replace(/\b\d+(GB|TB|ML|L)\b/gi, "");
+  // Elimina dobles espacios y recorta
+  return clean.replace(/\s+/g, " ").trim();
+}
+
 // =============================================================================
 // PROCESSING FUNCTIONS - SINGLE GROUP
 // =============================================================================
@@ -2272,6 +2296,7 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
                 type: "created",
                 productTitle: masterProduct.title,
                 productId: result.product?.id,
+                imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
                 processed: stats.processed + 1,
                 total: variantGroups.size,
                 variants: variants.length,
@@ -2298,6 +2323,7 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
                 type: "created",
                 productTitle: masterProduct.title,
                 productId: result.product?.id,
+                imageUrl: masterProduct.image_link || null,
                 processed: stats.processed + 1,
                 total: variantGroups.size,
                 variants: 1,
