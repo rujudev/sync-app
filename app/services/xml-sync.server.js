@@ -450,6 +450,14 @@ function parseXmlProduct(item) {
     }
   }
 
+  let rawPrice = item["g:price"] || "";
+  if (rawPrice.includes(" ")) {
+    rawPrice = rawPrice.split(" ")[0];
+  }
+  rawPrice = rawPrice.replace(",", ".");
+  rawPrice = rawPrice.replace(/[^\d.]/g, "");
+  const price = parseFloat(rawPrice) || 0;
+
   // ============================================
   // Producto normalizado
   // ============================================
@@ -461,7 +469,7 @@ function parseXmlProduct(item) {
     vendor: "Cosladafon",
     brand: item["g:brand"] || "",
     condition: item["g:condition"] || "",
-    price: parseFloat(item["g:price"]?.replace(/[^\d.]/g, "")) || 0,
+    price,
     gtin: item["g:gtin"] || null,
     sku,
     item_group_id: item["g:item_group_id"] || null,
