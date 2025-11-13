@@ -952,6 +952,54 @@ async function findExistingProduct(admin, p, cache) {
 
 // =============================================================================
 // PRODUCT CREATION WITH VARIANTS
+// Publicar producto en los canales Online Store y Shop
+async function publishProductToChannels(admin, productId) {
+  // Obtener los IDs de los canales de publicación
+  const PUBLICATIONS_QUERY = `
+    query {
+      publications(first: 10) {
+        edges {
+          node {
+            id
+            name
+          }
+        }
+      }
+    }
+  `;
+  const pubsResponse = await admin.graphql(PUBLICATIONS_QUERY);
+  const pubsData = await parseGraphQLResponse(pubsResponse);
+  const edges = pubsData?.data?.publications?.edges || [];
+  const channelIds = edges
+    .filter(e => e.node.name === 'Online Store' || e.node.name === 'Shop')
+    .map(e => e.node.id);
+  if (!channelIds.length) {
+    log('⚠️ No se encontraron canales Online Store/Shop para publicar');
+    return;
+  }
+  // Mutation para publicar el producto
+  const PUBLISH_MUTATION = `
+    mutation publishProduct($id: ID!, $channelIds: [ID!]!) {
+      publishablePublish(input: {
+        publishableId: $id,
+        publicationIds: $channelIds
+      }) {
+        publishable { id }
+        userErrors { field message }
+      }
+    }
+  `;
+  const publishResponse = await admin.graphql(PUBLISH_MUTATION, {
+    variables: { id: productId, channelIds }
+  });
+  const publishData = await parseGraphQLResponse(publishResponse);
+  const errors = publishData?.data?.publishablePublish?.userErrors || [];
+  if (errors.length) {
+    log('⚠️ Errores publicando producto:', errors);
+  } else {
+    log(`✅ Producto publicado en canales: ${channelIds.join(', ')}`);
+  }
+}
 // =============================================================================
 
 async function createShopifyProductWithVariants(admin, variants) {
@@ -1096,7 +1144,9 @@ async function createShopifyProductWithVariants(admin, variants) {
       }
     }
 
-    return { success: true, product: createdProduct };
+  // Publicar el producto en los canales Online Store y Shop
+  await publishProductToChannels(admin, createdProduct.id);
+  return { success: true, product: createdProduct };
   } catch (error) {
     log(`💥 Excepción creando producto ${title}:`, error.message);
     return { success: false, error: error.message };
@@ -1728,7 +1778,9 @@ async function createShopifyProduct(admin, p) {
       await updateDefaultVariant(admin, defaultVariant.id, p, createdProduct.id);
     }
 
-    return { success: true, product: createdProduct };
+  // Publicar el producto en los canales Online Store y Shop
+  await publishProductToChannels(admin, createdProduct.id);
+  return { success: true, product: createdProduct };
   } catch (error) {
     log(`💥 Excepción creando producto ${title}:`, error.message);
     return { success: false, error: error.message };
