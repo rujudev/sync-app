@@ -320,11 +320,56 @@ async function updateExistingProduct(admin, existingProduct, newVariants, sendPr
     
     if (result.success) {
       log(`✅ Producto actualizado exitosamente`);
+      // Obtener el producto actualizado desde Shopify
+      let updatedProduct = null;
+      try {
+        const GET_UPDATED_PRODUCT = `
+          query getUpdatedProduct($id: ID!) {
+            product(id: $id) {
+              id
+              title
+              vendor
+              tags
+              description
+              variants(first: 50) {
+                edges {
+                  node {
+                    id
+                    sku
+                    barcode
+                    price
+                    selectedOptions {
+                      name
+                      value
+                    }
+                  }
+                }
+              }
+              images(first: 10) {
+                edges {
+                  node {
+                    url
+                    altText
+                  }
+                }
+              }
+            }
+          }
+        `;
+        const productResponse = await withRetry(() => admin.graphql(GET_UPDATED_PRODUCT, {
+          variables: { id: productId }
+        }));
+        const productData = await parseGraphQLResponse(productResponse);
+        updatedProduct = productData?.data?.product || null;
+      } catch (err) {
+        log(`⚠️ No se pudo obtener el producto actualizado:`, err.message);
+      }
       return {
         success: true,
         variantsUpdated: updatedVariantsCount,
         variantsCreated: createdVariantsCount,
-        imagesProcessed: mediaIdMap.size
+        imagesProcessed: mediaIdMap.size,
+        product: updatedProduct
       };
     } else {
       log(`❌ Error actualizando producto:`, result.error);
@@ -451,13 +496,19 @@ function parseXmlProduct(item) {
   }
 
   let rawPrice = item["g:price"] || "";
+  rawPrice = rawPrice.trim();
   if (rawPrice.includes(" ")) {
     rawPrice = rawPrice.split(" ")[0];
   }
-  rawPrice = rawPrice.replace(",", ".");
+  rawPrice = rawPrice.replace(/,/, ".");
   rawPrice = rawPrice.replace(/[^\d.]/g, "");
-  const price = parseFloat(rawPrice) || 0;
+  const parts = rawPrice.split('.');
+  if (parts.length > 2) {
+    rawPrice = parts[0] + '.' + parts.slice(1).join('');
+  }
+  const price = (!isNaN(parseFloat(rawPrice)) && parseFloat(rawPrice) > 0) ? parseFloat(rawPrice) : null;
 
+  log(`Parsed price: "${item["g:price"]}" -> ${price}`);
   // ============================================
   // Producto normalizado
   // ============================================
@@ -1047,6 +1098,8 @@ async function createShopifyProductWithVariants(admin, variants) {
   
   // Validar precio
   const price = parseFloat(masterProduct.price);
+
+  log(`🛠️ Creando producto: ${title} con ${price} precio`);
   if (isNaN(price) || price <= 0) {
     log(`❌ Precio inválido para ${title}: ${masterProduct.price}`);
     return { success: false, error: "Precio inválido" };
@@ -1098,14 +1151,14 @@ async function createShopifyProductWithVariants(admin, variants) {
     const errors = responseData?.data?.productCreate?.userErrors || [];
     if (errors.length) {
       log(`❌ Error creando producto ${title}:`, errors);
-      return { success: false, error: errors.map(e => e.message).join("; ") };
+      return { success: false, error: errors.map(e => e.message).join("; "), product: null };
     }
 
     const createdProduct = responseData?.data?.productCreate?.product;
     if (!createdProduct || !createdProduct.id) {
       log(`❌ No se pudo crear el producto ${title}`);
       log(`🔍 responseData completo (variants):`, JSON.stringify(responseData, null, 2));
-      return { success: false, error: "No se pudo crear el producto" };
+      return { success: false, error: "No se pudo crear el producto", product: null };
     }
 
     log(`✅ Producto base creado: ${createdProduct.title} (ID: ${createdProduct.id})`);
@@ -1179,13 +1232,58 @@ async function createShopifyProductWithVariants(admin, variants) {
     }
 
     log(`🎉 Producto creado exitosamente: ${createdProduct.title} (ID: ${createdProduct.id})`);
-  // Publicar el producto en los canales Online Store y Shop
-  await publishProductToChannels(admin, createdProduct.id);
+    // Publicar el producto en los canales Online Store y Shop
+    await publishProductToChannels(admin, createdProduct.id);
 
-  return { success: true, product: createdProduct };
+    // Obtener el producto actualizado desde Shopify para devolverlo
+    let updatedProduct = null;
+    try {
+      const GET_UPDATED_PRODUCT = `
+        query getUpdatedProduct($id: ID!) {
+          product(id: $id) {
+            id
+            title
+            vendor
+            tags
+            description
+            variants(first: 50) {
+              edges {
+                node {
+                  id
+                  sku
+                  barcode
+                  price
+                  selectedOptions {
+                    name
+                    value
+                  }
+                }
+              }
+            }
+            images(first: 10) {
+              edges {
+                node {
+                  url
+                  altText
+                }
+              }
+            }
+          }
+        }
+      `;
+      const productResponse = await withRetry(() => admin.graphql(GET_UPDATED_PRODUCT, {
+        variables: { id: createdProduct.id }
+      }));
+      const productData = await parseGraphQLResponse(productResponse);
+      updatedProduct = productData?.data?.product || null;
+    } catch (err) {
+      log(`⚠️ No se pudo obtener el producto actualizado:`, err.message);
+    }
+
+    return { success: true, product: updatedProduct };
   } catch (error) {
     log(`💥 Excepción creando producto ${title}:`, error.message);
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, product: null };
   }
 }
 
@@ -1207,7 +1305,10 @@ async function createProductVariants(admin, product, variants) {
     log(`🎬 createProductVariants INICIADO - Producto: ${product.title || 'Sin título'}`);
     log(`📥 VARIANTS RECIBIDAS - Total: ${variants.length}`);
     variants.forEach((variant, i) => {
-      log(`   📦 Variant ${i}: SKU=${variant.sku}, Color="${variant.color}", Título="${variant.title}"`);
+      log(`   📦 Variant ${i}: SKU=${variant.sku}, Color="${variant.color}", Título="${variant.title}", Precio="${variant.price}"`);
+      if (!variant.price || isNaN(parseFloat(variant.price)) || parseFloat(variant.price) <= 0) {
+        log(`   ⚠️ [PRECIO] Variante ${i} tiene precio inválido: "${variant.price}"`);
+      }
     });
     
     // --- Obtener opciones completas del producto (con valores) ---
@@ -2085,6 +2186,25 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
     
     // Enviar evento de procesamiento actual
     if (shop) {
+      log(`[SSE] Enviando evento 'processing' con precio:`, masterProduct.price);
+      log(`[SSE] masterProduct:`, {
+        type: "processing",
+        productTitle: masterProduct.title,
+        productSku: masterProduct.sku,
+        barcode: masterProduct.gtin,
+        price: masterProduct.price,
+        vendor: masterProduct.vendor,
+        brand: masterProduct.brand,
+        tags: masterProduct.tags,
+        condition: masterProduct.condition,
+        availability: masterProduct.availability,
+        color: masterProduct.color,
+        productId: masterProduct.id,
+        imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
+        processed: globalStats.processed,
+        total: globalStats.total,
+        action: "processing"
+      });
       await sendProgressEvent(shop, {
         type: "processing",
         productTitle: masterProduct.title,
@@ -2111,16 +2231,19 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
     
     let result;
     if (existing) {
+      log(`🔍 Producto existente encontrado para el grupo ${groupId} (ID: ${existing.id})`);
       // Actualizar producto existente con nuevas variantes
       const sendProgressFn = shop ? (type, message) => sendProgressEvent(shop, { type, message }) : null;
       result = await updateExistingProduct(admin, existing, variants, sendProgressFn);
     
+      log('El resultado de la actualización es:', result);
       if (result) {
         // Enviar evento de actualización con datos reales del producto procesado
         if (shop && result.product) {
           const p = result.product;
           const mainVariant = p.variants?.edges?.[0]?.node || {};
-          await sendProgressEvent(shop, {
+
+          log(`[SSE] Enviando evento 'updated' para producto:`, {
             type: "updated",
             productTitle: p.title || masterProduct.title,
             productSku: mainVariant.sku || masterProduct.sku,
@@ -2145,6 +2268,33 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
             variantsCreated: result.variantsCreated || 0,
             action: "updated"
           });
+
+          // Si no hay variantes, price = masterProduct.price; si hay variantes, price = null y se envía variantDetails
+          const eventPriceUpd = (!isVariantGroup)
+            ? (masterProduct.price !== undefined && masterProduct.price !== null ? parseFloat(masterProduct.price).toFixed(2) : "N/A")
+            : null;
+          await sendProgressEvent(shop, {
+            type: "updated",
+            productTitle: p.title || masterProduct.title,
+            productSku: mainVariant.sku || masterProduct.sku,
+            barcode: mainVariant.barcode || masterProduct.gtin,
+            price: eventPriceUpd,
+            vendor: p.vendor || masterProduct.vendor,
+            brand: p.brand || masterProduct.brand,
+            tags: p.tags || masterProduct.tags,
+            condition: mainVariant.condition || masterProduct.condition,
+            availability: p.availability || masterProduct.availability,
+            color: mainVariant.color || masterProduct.color,
+            productId: p.id || existing.id,
+            imageUrl: p.imageUrl || masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
+            processed: globalStats.processed + 1,
+            total: globalStats.total,
+            variants: Array.isArray(p.variants) ? p.variants.length : variants.length,
+            variantsUpdated: result.variantsUpdated || 0,
+            variantsCreated: result.variantsCreated || 0,
+            action: "updated",
+            variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
+          });
         }
         
         // Actualizar estadísticas
@@ -2161,6 +2311,7 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
         };
       }
     } else {
+      log(`➕ No se encontró producto existente para el grupo ${groupId}. Creando nuevo producto.`);
       // Crear nuevo producto
       if (isVariantGroup) {
         // Crear producto con múltiples variantes
@@ -2170,7 +2321,8 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
           const p = result.product;
           const mainVariant = p.variants?.edges?.[0]?.node || {};
           if (shop) {
-            await sendProgressEvent(shop, {
+
+            log(`[SSE] Enviando evento 'created' para producto con variantes:`, {
               type: "created",
               productTitle: p.title || masterProduct.title,
               productSku: mainVariant.sku || masterProduct.sku,
@@ -2193,6 +2345,26 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
               variants: Array.isArray(p.variants) ? p.variants.length : variants.length,
               variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
             });
+            // Si hay variantes, price = null y se envía variantDetails
+            await sendProgressEvent(shop, {
+              type: "created",
+              productTitle: p.title || masterProduct.title,
+              productSku: mainVariant.sku || masterProduct.sku,
+              barcode: mainVariant.barcode || masterProduct.gtin,
+              price: null,
+              vendor: p.vendor || masterProduct.vendor,
+              brand: p.brand || masterProduct.brand,
+              tags: p.tags || masterProduct.tags,
+              condition: mainVariant.condition || masterProduct.condition,
+              availability: p.availability || masterProduct.availability,
+              color: mainVariant.color || masterProduct.color,
+              productId: p.id,
+              imageUrl: p.imageUrl || masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
+              processed: globalStats.processed + 1,
+              total: globalStats.total,
+              variants: Array.isArray(p.variants) ? p.variants.length : variants.length,
+              variantDetails: variants.map(v => ({ title: v.title, price: v.price, color: v.color }))
+            });
           }
           // Actualizar estadísticas
           globalStats.created++;
@@ -2200,6 +2372,7 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
           return { success: true, action: 'created', variants: variants.length };
         }
       } else {
+        log(`➕ No se encontró producto existente para el grupo ${groupId}. Creando nuevo producto.`);
         // Crear producto simple
         result = await createShopifyProduct(admin, masterProduct);
         if (result.success && result.product) {
@@ -2207,6 +2380,28 @@ async function processVariantGroup(admin, groupId, variants, cache, shop, global
           const p = result.product;
           const mainVariant = p.variants?.edges?.[0]?.node || {};
           if (shop) {
+            log(`[SSE] Enviando evento 'created' para producto simple:`, {
+              type: "created",
+              productTitle: p.title || masterProduct.title,
+              productSku: mainVariant.sku || masterProduct.sku,
+              barcode: mainVariant.barcode || masterProduct.gtin,
+              price: (mainVariant.price !== undefined && mainVariant.price !== null)
+                ? parseFloat(mainVariant.price).toFixed(2)
+                : (masterProduct.price !== undefined && masterProduct.price !== null)
+                  ? parseFloat(masterProduct.price).toFixed(2)
+                  : "N/A",
+              vendor: p.vendor || masterProduct.vendor,
+              brand: p.brand || masterProduct.brand,
+              tags: p.tags || masterProduct.tags,
+              condition: mainVariant.condition || masterProduct.condition,
+              availability: p.availability || masterProduct.availability,
+              color: mainVariant.color || masterProduct.color,
+              productId: p.id,
+              imageUrl: p.imageUrl || masterProduct.image_link || null,
+              processed: globalStats.processed + 1,
+              total: globalStats.total,
+              variants: Array.isArray(p.variants) ? p.variants.length : 1
+            });
             await sendProgressEvent(shop, {
               type: "created",
               productTitle: p.title || masterProduct.title,
@@ -2285,6 +2480,8 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
     productsOmitted: 0,
     productsWithErrors: 0
   };
+
+  log(`Los productos son: ${products}`)
   const cache = new Map();
   // Paso 1: Agrupar productos por variantes
   const variantGroups = groupProductsByVariants(products);
@@ -2337,13 +2534,27 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
           stats.productsProcessed++;
           // Enviar evento de actualización
           if (shop) {
+            const eventPriceUpd = (!isVariantGroup)
+              ? (masterProduct.price !== undefined && masterProduct.price !== null ? parseFloat(masterProduct.price).toFixed(2) : "N/A")
+              : null;
             await sendProgressEvent(shop, {
               type: "updated",
               productTitle: masterProduct.title,
+              productSku: masterProduct.sku,
+              barcode: masterProduct.gtin,
+              price: eventPriceUpd,
+              vendor: masterProduct.vendor,
+              brand: masterProduct.brand,
+              tags: masterProduct.tags,
+              condition: masterProduct.condition,
+              availability: masterProduct.availability,
+              color: masterProduct.color,
               productId: existing.id,
+              imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
               processed: stats.processed + 1,
               total: variantGroups.size,
               variants: isVariantGroup ? variants.length : 1,
+              variantDetails: isVariantGroup ? variants.map(v => ({ title: v.title, price: v.price, color: v.color })) : undefined,
               totalProducts: stats.totalProducts,
               productsProcessed: stats.productsProcessed,
               productsCreated: stats.productsCreated,
@@ -2368,6 +2579,15 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
               await sendProgressEvent(shop, {
                 type: "created",
                 productTitle: masterProduct.title,
+                productSku: masterProduct.sku,
+                barcode: masterProduct.gtin,
+                price: null,
+                vendor: masterProduct.vendor,
+                brand: masterProduct.brand,
+                tags: masterProduct.tags,
+                condition: masterProduct.condition,
+                availability: masterProduct.availability,
+                color: masterProduct.color,
                 productId: result.product?.id,
                 imageUrl: masterProduct.image_link || (variants[0] && variants[0].image_link) || null,
                 processed: stats.processed + 1,
@@ -2392,9 +2612,19 @@ export async function processProductsWithDuplicateCheck(admin, products, shop) {
             stats.productsProcessed++;
             // Enviar evento de creación simple
             if (shop) {
+              const eventPrice = (masterProduct.price !== undefined && masterProduct.price !== null ? parseFloat(masterProduct.price).toFixed(2) : "N/A");
               await sendProgressEvent(shop, {
                 type: "created",
                 productTitle: masterProduct.title,
+                productSku: masterProduct.sku,
+                barcode: masterProduct.gtin,
+                price: eventPrice,
+                vendor: masterProduct.vendor,
+                brand: masterProduct.brand,
+                tags: masterProduct.tags,
+                condition: masterProduct.condition,
+                availability: masterProduct.availability,
+                color: masterProduct.color,
                 productId: result.product?.id,
                 imageUrl: masterProduct.image_link || null,
                 processed: stats.processed + 1,
@@ -2619,7 +2849,7 @@ export async function parseXMLData(xmlUrl, admin, shop) {
   };
   log(`📊 Estadísticas de variantes:`, variantStats);
   if (!admin) return products;
-  return await processProductsWithDuplicateCheck(admin, products, shop);
+  return await processProductsParallel(admin, products, shop);
 }
 
 /**

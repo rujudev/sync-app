@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
 import { ProgressBar } from '@shopify/polaris';
 import '@shopify/polaris/build/esm/styles.css';
+import { useEffect, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import styles from "./_index/styles.module.css";
@@ -102,6 +102,8 @@ export default function Index() {
   const [currentPage, setCurrentPage] = useState(1);
   const [productsPerPage] = useState(20);
   const [eventSourceRef, setEventSourceRef] = useState(null);
+  // Estado para controlar el desplegable de variantes por producto
+  const [openVariantProductId, setOpenVariantProductId] = useState(null);
 
   // Función para limpiar todo el estado de importación
   const resetImportState = () => {
@@ -209,6 +211,7 @@ export default function Index() {
         action: ACTION[type] || 'Omitido',
         timestamp: new Date().toLocaleString('es-ES'),
         errorMessage: data.error || null,
+        variantDetails: Array.isArray(data.variantDetails) ? data.variantDetails : [],
         // ...otros campos si los necesitas
       };
 
@@ -232,19 +235,6 @@ export default function Index() {
 
     const eventSource = new EventSource(sseUrl);
     setEventSourceRef(eventSource);
-
-    eventSource.onopen = () => {
-      console.warn('🟢 [SSE] Conexión abierta exitosamente');
-    };
-
-    eventSource.onerror = (error) => {
-      console.error('❌ [SSE] Error de conexión:', error);
-    };
-
-    eventSource.addEventListener('connected', (event) => {
-      const data = JSON.parse(event.data);
-      console.warn('🔗 [SSE] Conectado a shop:', data.shop);
-    });
 
     eventSource.addEventListener('sync_started', (event) => {
       const data = JSON.parse(event.data);
@@ -271,23 +261,18 @@ export default function Index() {
 
     eventSource.addEventListener('created', (event) => {
       const data = JSON.parse(event.data);
-      const timestamp = Date.now();
-      console.warn(`🆕 [SSE] ${timestamp} - CREATED: ${data.productTitle} (${data.processed}/${data.total})${data.timing ? ` [${data.timing.search + data.timing.create}ms]` : ''}`);
-      console.log({ data })
+      console.log('created Data: ', { data })
       updateSyncState(data, 'created');
     });
 
     eventSource.addEventListener('updated', (event) => {
       const data = JSON.parse(event.data);
-      const timestamp = Date.now();
-      console.warn(`📡 [SSE] ${timestamp} - UPDATED: ${data.productTitle} (${data.processed}/${data.total})${data.timing ? ` [${data.timing.search + data.timing.update}ms]` : ''}`);
+      console.log('updated data: ', { data })
       updateSyncState(data, 'updated');
     });
 
     eventSource.addEventListener('skipped', (event) => {
       const data = JSON.parse(event.data);
-      const timestamp = Date.now();
-      console.warn(`⏭️ [SSE] ${timestamp} - SKIPPED: ${data.productTitle} (${data.processed}/${data.total})`);
       updateSyncState(data, 'skipped');
     });
 
@@ -295,10 +280,10 @@ export default function Index() {
       const data = JSON.parse(event.data);
       console.warn(`⚙️ [SSE] PROCESSING: ${data.productTitle} (${data.processed}/${data.total}) - ${data.currentStep}`);
 
+      // Solo actualizar el estado actual, pero NO el contador processedItems
       setSyncState(prev => ({
         ...prev,
         currentStep: data.currentStep,
-        processedItems: data.processed,
         totalItems: data.total
       }));
     });
@@ -379,7 +364,7 @@ export default function Index() {
     <div className={styles.xmlApp}>
       <style dangerouslySetInnerHTML={{ __html: animationStyles }} />
 
-      <s-page heading="Importar Productos desde XML">
+      <s-page heading="Importar Productos desde XML" inlineSize='large'>
 
         {/* SECCIÓN PRINCIPAL DE IMPORTACIÓN */}
         <s-section>
@@ -408,7 +393,7 @@ export default function Index() {
                     disabled={syncState?.status === 'syncing'}
                   />
 
-                  <s-stack>
+                  <s-stack direction="inline" columnGap="large">
                     <s-button
                       variant="primary"
                       type="submit"
@@ -421,7 +406,7 @@ export default function Index() {
                           "📥 Importar Productos"}
                     </s-button>
                     <s-button
-                      variant="critical"
+                      variant="secondary"
                       size="large"
                       onClick={resetImportState}
                       disabled={!syncState?.isActive}
@@ -517,18 +502,6 @@ export default function Index() {
                       </s-text>
                       <s-badge tone="critical" size="small">
                         ❌ Errores
-                      </s-badge>
-                    </s-stack>
-                  </s-box>
-
-                  {/* TOTAL PROCESADOS */}
-                  <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
-                    <s-stack rowGap="large" justifyContent="center" alignItems="center">
-                      <s-text variant="heading-lg" fontWeight="bold">
-                        {syncState?.processedItems || 0}
-                      </s-text>
-                      <s-badge size="small">
-                        📊 Procesados
                       </s-badge>
                     </s-stack>
                   </s-box>
@@ -664,86 +637,124 @@ export default function Index() {
                     <s-table-header listSlot="inline">Color</s-table-header>
                     <s-table-header listSlot="inline">Condición</s-table-header>
                     <s-table-header listSlot="inline">Disponibilidad</s-table-header>
+                    <s-table-header></s-table-header>
                   </s-table-header-row>
                   <s-table-body>
                     {(currentProducts || []).map((product) => {
-                      console.log(product)
-                      return (
-                        <React.Fragment key={product.id}>
-                          <s-table-row>
-                            {/* Imagen */}
-                            <s-table-cell>
-                              <s-image
+                      const rows = [];
+                      rows.push(
+                        <s-table-row key={product.id}>
+                          {/* Imagen */}
+                          <s-table-cell>
+                            <s-stack maxInlineSize="130px">
+                              <s-thumbnail
                                 src={product.imageUrl}
                                 alt={product.title}
                                 inlineSize="fill"
                               />
-                            </s-table-cell>
-                            {/* Título */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" fontWeight="semibold">
-                                {product.title}
-                              </s-text>
-                            </s-table-cell>
-                            {/* SKU */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" tone="subdued">
-                                {product.sku || 'N/A'}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Barcode */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" tone="subdued">
-                                {product.barcode || 'N/A'}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Precio */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" tone="subdued">
-                                {product.price || 'N/A'}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Acción */}
-                            <s-table-cell>
-                              <s-badge
-                                tone={
-                                  product.type === 'created' ? 'success' :
-                                    product.type === 'updated' ? 'info' :
-                                      product.type === 'product_error' ? 'critical' : 'neutral'
-                                }
+                            </s-stack>
+                          </s-table-cell>
+                          {/* Título */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" fontWeight="semibold">
+                              {product.title}
+                            </s-text>
+                          </s-table-cell>
+                          {/* SKU */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" tone="subdued">
+                              {product.sku || 'N/A'}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Barcode */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" tone="subdued">
+                              {product.barcode || 'N/A'}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Precio */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" tone="subdued">
+                              {Array.isArray(product.variantDetails) && product.variantDetails.length > 0 ? '--' : (product.price || 'N/A')}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Acción */}
+                          <s-table-cell>
+                            <s-badge
+                              tone={
+                                product.type === 'created' ? 'success' :
+                                  product.type === 'updated' ? 'info' :
+                                    product.type === 'product_error' ? 'critical' : 'neutral'
+                              }
+                            >
+                              {product.action}
+                            </s-badge>
+                          </s-table-cell>
+                          {/* Marca */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" tone="subdued">
+                              {product.brand || 'N/A'}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Color */}
+                          <s-table-cell>
+                            <s-text variant="body-sm" tone="subdued">
+                              {product.color || 'N/A'}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Condición */}
+                          <s-table-cell>
+                            <s-text variant="body-sm">
+                              {product.condition}
+                            </s-text>
+                          </s-table-cell>
+                          {/* Disponibilidad */}
+                          <s-table-cell>
+                            <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
+                              {product.availability === 'in_stock' ? 'En stock' : 'Agotado'}
+                            </s-badge>
+                          </s-table-cell>
+                          <s-table-cell>
+                            {Array.isArray(product.variantDetails) && product.variantDetails.length > 0 && (
+                              <s-button
+                                variant="tertiary"
+                                size="slim"
+                                onClick={() => setOpenVariantProductId(openVariantProductId === product.id ? null : product.id)}
                               >
-                                {product.action}
-                              </s-badge>
-                            </s-table-cell>
-                            {/* Marca */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" tone="subdued">
-                                {product.brand || 'N/A'}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Color */}
-                            <s-table-cell>
-                              <s-text variant="body-sm" tone="subdued">
-                                {product.color || 'N/A'}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Condición */}
-                            <s-table-cell>
-                              <s-text variant="body-sm">
-                                {product.condition}
-                              </s-text>
-                            </s-table-cell>
-                            {/* Disponibilidad */}
-                            <s-table-cell>
-                              <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
-                                {product.availability === 'in_stock' ? 'En stock' : 'Agotado'}
-                              </s-badge>
+                                {openVariantProductId === product.id ? 'Ocultar variantes' : 'Consultar variantes'}
+                              </s-button>
+                            )}
+                          </s-table-cell>
+                        </s-table-row>
+                      );
+
+                      if (openVariantProductId === product.id && Array.isArray(product.variantDetails) && product.variantDetails.length > 0) {
+                        rows.push(
+                          <s-table-row key={product.id + '-variants'}>
+                            <s-table-cell colSpan={11} style={{ background: '#f6f6f7', padding: '16px 24px' }}>
+                              <div className={styles.variantAccordion}>
+                                <s-stack gap="tight">
+                                  {product.variantDetails.map((v, idx) => (
+                                    <s-box key={idx} background="subdued" borderRadius="base" padding="tight">
+                                      <s-text variant="body-xs" fontWeight="semibold">
+                                        {v.title ? v.title : 'Variante'}
+                                      </s-text>
+                                      <s-text variant="body-xs" tone="subdued">
+                                        Color: {v.color || 'N/A'}
+                                      </s-text>
+                                      <s-text variant="body-xs" tone="success">
+                                        Precio: {v.price || 'N/A'}
+                                      </s-text>
+                                    </s-box>
+                                  ))}
+                                </s-stack>
+                              </div>
                             </s-table-cell>
                           </s-table-row>
-                        </React.Fragment>
-                      )
-                    }
-                    )}
+                        );
+                      }
+                      return rows;
+                    })}
                   </s-table-body>
                 </s-table>
 
