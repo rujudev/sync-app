@@ -1,6 +1,6 @@
 import {
-  normalizeProductsWithAttributes,
-  groupByModelCapacityColor
+    groupByModelCapacityColor,
+    normalizeProductsWithAttributes
 } from './app/services/product-attributes.js';
 
 const productos = [
