@@ -1,6 +1,8 @@
 // app/services/product-attributes.js
 // Helpers para extraer atributos y agrupar productos por variantes
 
+import { log } from "./xml-sync.server";
+
 /**
  * Extrae capacidad, color y traducción del color desde el título.
  * Ejemplo: "Samsung Galaxy S23 Ultra 512Gb Sky Blue (Azul)"
@@ -75,4 +77,97 @@ export function groupByModelCapacityColor(productos) {
     groups[key].push(p);
   });
   return Object.values(groups);
+}
+
+function mapAvailability(av) {
+  const a = av?.toLowerCase();
+  if (a === "in_stock" || a === "available")
+    return { status: "active", inventoryPolicy: "CONTINUE" };
+
+  if (a === "preorder" || a === "coming_soon" || a === "new")
+    return { status: "active", inventoryPolicy: "CONTINUE", tags: ["preorder"] };
+
+  return { status: "draft", inventoryPolicy: "DENY" };
+}
+
+export function parseXmlProduct(item) {
+  const availabilityInfo = mapAvailability(item["g:availability"]);
+
+  // ============================================
+  // SKU: prioridad → GTIN > MPN > g:id
+  // ============================================
+  const sku = item["g:id"];
+
+  // ============================================
+  // TAGS
+  // ============================================
+  const tags = [];
+
+  // Tags de disponibilidad (preorder)
+  if (availabilityInfo.tags) tags.push(...availabilityInfo.tags);
+
+  // Marca
+  if (item["g:brand"] && typeof item["g:brand"] === "string") {
+    const brandTag = item['g:brand'].toLowerCase() === 'apple' ? 'Apple' : 'Android';
+
+    tags.push(brandTag);
+  }
+
+  // Condición → etiquetas normalizadas
+  const condition = item["g:condition"]?.toLowerCase();
+  if (condition) {
+    // tags traducidos
+    switch (condition) {
+      case "new":
+        tags.push("nuevo");
+        break;
+      case "refurbished":
+        tags.push("reacondicionado");
+        break;
+      case "used":
+        tags.push("usado");
+        break;
+
+      default:
+        tags.push(condition);
+    }
+  }
+
+  let rawPrice = item["g:price"] || "";
+  rawPrice = rawPrice.trim();
+  if (rawPrice.includes(" ")) {
+    rawPrice = rawPrice.split(" ")[0];
+  }
+  rawPrice = rawPrice.replace(/,/, ".");
+  rawPrice = rawPrice.replace(/[^\d.]/g, "");
+  const parts = rawPrice.split('.');
+  if (parts.length > 2) {
+    rawPrice = parts[0] + '.' + parts.slice(1).join('');
+  }
+  const price = (!isNaN(parseFloat(rawPrice)) && parseFloat(rawPrice) > 0) ? parseFloat(rawPrice) : null;
+
+  log(`Parsed price: "${item["g:price"]}" -> ${price}`);
+  // ============================================
+  // Producto normalizado
+  // ============================================
+  return {
+    id: item["g:id"] || null,
+    title: item["g:title"] || "Producto sin título",
+    description: item["g:description"].replace('Cosladafon', 'Secondtech') || "",
+    // vendor: item["g:brand"] || "Proveedor",
+    vendor: "Cosladafon",
+    brand: item["g:brand"] || "",
+    condition: item["g:condition"] || "",
+    price,
+    gtin: item["g:gtin"] || null,
+    sku,
+    item_group_id: item["g:item_group_id"] || null,
+    image_link: item["g:image_link"] || null,
+    availability: item["g:availability"] || "unknown",
+    color: item["g:color"] || "",
+    category: item["g:product_type"] || "",
+    tags,
+    status: availabilityInfo.status,
+    inventoryPolicy: availabilityInfo.inventoryPolicy,
+  };
 }

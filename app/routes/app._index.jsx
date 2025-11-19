@@ -1,6 +1,6 @@
 import { ProgressBar } from '@shopify/polaris';
 import '@shopify/polaris/build/esm/styles.css';
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from 'react';
 import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import styles from "./_index/styles.module.css";
@@ -29,15 +29,15 @@ const animationStyles = `
 `;
 
 export const action = async ({ request }) => {
-  console.error('🚨 [ACTION] Action ejecutado - Método:', request.method);
+  console.warn('🚨 [ACTION] Action ejecutado - Método:', request.method);
 
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
 
   try {
-    const { session } = await authenticate.admin(request);
-    console.error('✅ [ACTION] Autenticación exitosa');
+    const { session, admin } = await authenticate.admin(request);
+    console.info('✅ [ACTION] Autenticación exitosa');
 
     const formData = await request.formData();
     const xmlUrl = formData.get("xmlUrl");
@@ -47,10 +47,10 @@ export const action = async ({ request }) => {
     }
 
     // Usar parseXMLData para obtener estadísticas de variantes y estructuración completa
-    const { parseXMLData } = await import("../services/xml-sync.server.js");
+    const { syncXmlString } = await import("../services/xml-sync.server.js");
 
     // Solo parsear (sin admin = solo parsing y estadísticas, no creación en Shopify)
-    const parsedProducts = await parseXMLData(xmlUrl, null, null);
+    const parsedProducts = await syncXmlString(admin, xmlUrl);
 
     if (!parsedProducts || parsedProducts.length === 0) {
       return Response.json({ error: "No se encontraron productos en el XML" }, { status: 400 });
@@ -91,7 +91,7 @@ export const loader = async ({ request }) => {
 };
 
 export default function Index() {
-  console.warn('🎯 [CLIENT] Renderizando componente');
+  console.info('🎯 [CLIENT] Renderizando componente');
 
   const fetcher = useFetcher();
   const loaderData = useLoaderData();
@@ -104,6 +104,9 @@ export default function Index() {
   const [eventSourceRef, setEventSourceRef] = useState(null);
   // Estado para controlar el desplegable de variantes por producto
   const [openVariantProductId, setOpenVariantProductId] = useState(null);
+  // Nuevo estado para el acordeón de grupos
+  const [openVariantGroupIdx, setOpenVariantGroupIdx] = useState(null);
+  const [grupos, setGrupos] = useState([]);
 
   // Función para limpiar todo el estado de importación
   const resetImportState = () => {
@@ -124,7 +127,6 @@ export default function Index() {
 
   const actionData = fetcher.data;
   const isLoading = fetcher.state === "submitting";
-  const sessionId = loaderData?.sessionId;
 
   const PROCESSED_TYPE = {
     'created': 'Creado',
@@ -134,187 +136,122 @@ export default function Index() {
     'product_error': 'Error'
   }
 
-  // Función unificada para actualizar el estado del sync
-  const updateSyncState = (data, type) => {
-    console.log({ data })
-    setSyncState(prev => {
-      const newProduct = {
-        id: Date.now() + Math.random(),
-        title: data.productTitle,
-        type: type,
-        timestamp: Date.now(),
-        sku: data.productSku,
-        timing: data.timing
-      };
-
-      const updatedProducts = prev?.recentProducts ? [newProduct, ...prev.recentProducts.slice(0, 9)] : [newProduct];
-
-      // Calcular estadísticas más detalladas con nuevos contadores individuales
-      const newStats = {
-        processedItems: data.productsProcessed ?? data.processed,
-        totalItems: data.totalProducts ?? data.total,
-        createdItems: (data.productsCreated ?? prev?.createdItems) || 0,
-        updatedItems: (data.productsUpdated ?? prev?.updatedItems) || 0,
-        skippedItems: (data.productsOmitted ?? prev?.skippedItems) || 0,
-        errorItems: (data.productsWithErrors ?? prev?.errorItems) || 0,
-        currentStep: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${data.productTitle}`,
-        status: 'syncing',
-        isActive: true,
-        recentProducts: updatedProducts
-      };
-
-      // Incrementar el contador específico según el tipo
-      if (type === 'created') {
-        newStats.createdItems = (prev?.createdItems || 0) + 1;
-      } else if (type === 'updated') {
-        newStats.updatedItems = (prev?.updatedItems || 0) + 1;
-      } else if (type === 'skipped') {
-        newStats.skippedItems = (prev?.skippedItems || 0) + 1;
-      } else if (type === 'product_error' || type === 'error') {
-        newStats.errorItems = (prev?.errorItems || 0) + 1;
-        newStats.currentStep = `Error: ${data.error || 'Error de procesamiento'}`;
-      }
-
-      return newStats;
-    });
-
-    const CONDITION = {
-      "new": "Nuevo",
-      "used": "Usado",
-      "refurbished": "Reacondicionado"
-    }
-
-    const ACTION = {
-      "created": "Creado",
-      "updated": "Actualizado",
-      "error": "Error",
-      "product_error": "Error"
-    }
-
-    // Agregar producto a la tabla principal
-    setProcessedProducts(prev => {
-      const prevArray = prev || [];
-      const productData = {
-        id: data.productId || `${Date.now()}_${Math.random()}`,
-        title: data.productTitle,
-        sku: data.productSku,
-        imageUrl: data.imageUrl,
-        barcode: data.barcode || 'N/A',
-        price: data.price || 'N/A',
-        vendor: data.vendor || 'Sin marca',
-        brand: data.brand || '',
-        tags: data.tags || '',
-        color: data.color || '',
-        condition: CONDITION[data.condition] || 'Nuevo',
-        availability: data.availability || 'unknown',
-        type: type,
-        action: ACTION[type] || 'Omitido',
-        timestamp: new Date().toLocaleString('es-ES'),
-        errorMessage: data.error || null,
-        variantDetails: Array.isArray(data.variantDetails) ? data.variantDetails : [],
-        // ...otros campos si los necesitas
-      };
-
-      return [productData, ...prevArray];
-    });
-  };
-
   useEffect(() => {
-    console.log(processedProducts)
-  }, [processedProducts])
+    const es = new EventSource("/api/sync-events");
 
-  useEffect(() => {
-    console.warn('🔗 [SSE] Estableciendo conexión SSE persistente');
-    console.warn('🔗 [SSE] SessionId:', sessionId);
-
-    const sseUrl = sessionId
-      ? `/api/sync-events?sessionId=${encodeURIComponent(sessionId)}`
-      : `/api/sync-events`;
-
-    console.warn('🔗 [SSE] URL:', sseUrl);
-
-    const eventSource = new EventSource(sseUrl);
-    setEventSourceRef(eventSource);
-
-    eventSource.addEventListener('sync_started', (event) => {
-      const data = JSON.parse(event.data);
-      console.warn(`🚀 [SSE] ${Date.now()} - SYNC STARTED:`, data.message, '- Total:', data.totalItems);
-
-      // Reiniciar tabla de productos
-      setProcessedProducts([]);
-      setCurrentPage(1);
-
-      // Inicializar estado de sync
-      setSyncState({
-        processedItems: 0,
-        createdItems: 0,
-        updatedItems: 0,
-        skippedItems: 0,
-        errorItems: 0,
-        totalItems: data.totalItems,
-        currentStep: 'Iniciando procesamiento...',
-        status: 'syncing',
-        isActive: true,
-        recentProducts: []
-      });
+    setSyncState({
+      isActive: true,
+      status: "stopped",
+      totalItems: 0,
+      processedItems: 0,
+      createdItems: 0,
+      updatedItems: 0,
+      skippedItems: 0,
+      errorItems: 0,
+      recentProducts: [],
+      currentStep: "Esperando eventos…"
     });
 
-    eventSource.addEventListener('created', (event) => {
-      const data = JSON.parse(event.data);
-      console.log('created Data: ', { data })
-      updateSyncState(data, 'created');
-    });
-
-    eventSource.addEventListener('updated', (event) => {
-      const data = JSON.parse(event.data);
-      console.log('updated data: ', { data })
-      updateSyncState(data, 'updated');
-    });
-
-    eventSource.addEventListener('skipped', (event) => {
-      const data = JSON.parse(event.data);
-      updateSyncState(data, 'skipped');
-    });
-
-    eventSource.addEventListener('processing', (event) => {
-      const data = JSON.parse(event.data);
-      console.warn(`⚙️ [SSE] PROCESSING: ${data.productTitle} (${data.processed}/${data.total}) - ${data.currentStep}`);
-
-      // Solo actualizar el estado actual, pero NO el contador processedItems
+    es.addEventListener("connected", () => {
       setSyncState(prev => ({
         ...prev,
-        currentStep: data.currentStep,
-        totalItems: data.total
+        currentStep: "Conectado al servidor"
       }));
     });
 
-    eventSource.addEventListener('error', (event) => {
-      const data = JSON.parse(event.data);
-      const timestamp = Date.now();
-      console.warn(`❌ [SSE] ${timestamp} - ERROR: ${data.productTitle} - ${data.error}`);
-      updateSyncState(data, 'error');
+    es.addEventListener("sync-start", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        status: "syncing",
+        totalItems: d.totalProducts || 0,
+        currentStep: "Sincronización iniciada"
+      }));
     });
 
-    eventSource.addEventListener('product_error', (event) => {
-      const data = JSON.parse(event.data);
-      const timestamp = Date.now();
-      console.warn(`❌ [SSE] ${timestamp} - PRODUCT_ERROR: ${data.product || data.productTitle} - ${data.error}`);
-      updateSyncState(data, 'product_error');
+    es.addEventListener("groups-detected", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Detectados ${d.totalGroups} grupos`
+      }));
     });
 
-    eventSource.addEventListener('sync_completed', (event) => {
-      const data = JSON.parse(event.data);
-      console.warn('🎉 [SSE] SYNC COMPLETED:', data.stats);
-
-      // Limpiar estado al finalizar importación
-      resetImportState();
+    es.addEventListener("group-start", e => {
+      const d = JSON.parse(e.data);
+      setSyncState(prev => ({ ...prev, currentStep: `Iniciando grupo ${d.groupId}` }));
     });
 
-    return () => {
-      console.warn('🔌 [SSE] Cerrando conexión');
-      eventSource.close();
-    };
-  }, [sessionId]);
+    es.addEventListener("processing-group", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Procesando grupo ${d.groupId}`
+      }));
+    });
+
+    es.addEventListener("group-created", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Creando producto: ${d.title}`,
+        recentProducts: [
+          { type: "request", title: d.title, groupId: d.groupId },
+          ...((prev.recentProducts || []).slice(0, 9))
+        ]
+      }));
+    });
+
+    es.addEventListener("product-create-request", e => {
+      const d = JSON.parse(e.data);
+
+      // extraer título/sku si vienen en result.product
+      const title = d.result?.product?.title || d.result?.product?.id || d.groupId;
+      const sku = d.result?.product?.variants?.[0]?.sku || null;
+
+      setSyncState(prev => ({
+        ...prev,
+        createdItems: (prev.createdItems || 0) + 1,
+        processedItems: (prev.processedItems || 0) + 1,
+        currentStep: `Producto creado: ${title}`,
+        recentProducts: [
+          { type: "created", title, sku },
+          ...((prev.recentProducts || []).slice(0, 9))
+        ]
+      }));
+    });
+
+    es.addEventListener("group-updated", e => {
+      const d = JSON.parse(e.data);
+      const createdInGroup = d.result?.created || 0;
+      const updatedInGroup = d.result?.updated || 0;
+
+      setSyncState(prev => ({
+        ...prev,
+        // contamos el "grupo" como 1 processed (representa el producto principal)
+        processedItems: (prev.processedItems || 0) + 1,
+        // las variantes creadas/actualizadas acumuladas
+        createdItems: (prev.createdItems || 0) + createdInGroup,
+        updatedItems: (prev.updatedItems || 0) + updatedInGroup,
+        currentStep: `Grupo actualizado: ${d.groupId} (+${createdInGroup} / ~${updatedInGroup})`,
+        recentProducts: [
+          { type: "updated", title: d.groupId, created: createdInGroup, updated: updatedInGroup },
+          ...((prev.recentProducts || []).slice(0, 9))
+        ]
+      }));
+    });
+
+    es.addEventListener("sync-end", e => {
+      console.log("Fin de sync:", JSON.parse(e.data));
+      es.close();
+    });
+
+    return () => es.close();
+  }, []);
 
   // ✨ NUEVO: useEffect que inicia procesamiento cuando recibimos productos del action
   useEffect(() => {
@@ -346,6 +283,7 @@ export default function Index() {
         if (result.success) {
           console.warn(`✅ [CLIENT] ${Date.now()} - Procesamiento iniciado exitosamente (${Math.round(endTime - startTime)}ms)`);
           console.warn('🔄 [CLIENT] Esperando eventos SSE...');
+          setGrupos(result.grupos || []);
         } else {
           console.error('❌ [CLIENT] Error iniciando procesamiento:', result.error);
         }
@@ -527,7 +465,7 @@ export default function Index() {
         )}
 
         {/* FEED DE PRODUCTOS EN TIEMPO REAL */}
-        {syncState?.recentProducts?.length > 0 && (
+        {/* syncState?.recentProducts?.length > 0 && (
           <s-section>
             <s-card>
               <s-stack gap="base">
@@ -569,7 +507,7 @@ export default function Index() {
               </s-stack>
             </s-card>
           </s-section>
-        )}
+        ) */}
 
         {/* MENSAJE DE ÉXITO INICIAL */}
         {actionData?.success && !syncState?.isActive && (
@@ -804,6 +742,70 @@ export default function Index() {
                     </s-stack>
                   )}
                 </s-stack>
+              </s-stack>
+            </s-card>
+          </s-section>
+        )}
+
+        {/* TABLA DE PRODUCTOS AGRUPADOS POR MODELO Y VARIANTES */}
+        {grupos.length > 0 && (
+          <s-section>
+            <s-card>
+              <s-stack gap="large">
+                <s-text variant="heading-md" fontWeight="bold">
+                  📦 Productos Agrupados por Modelo ({grupos.length})
+                </s-text>
+                <s-table>
+                  <s-table-header-row>
+                    <s-table-header>Modelo</s-table-header>
+                    <s-table-header>Acción</s-table-header>
+                  </s-table-header-row>
+                  <s-table-body>
+                    {grupos.map((grupo, idx) => (
+                      <React.Fragment key={idx}>
+                        {/* Fila principal: modelo */}
+                        <s-table-row>
+                          <s-table-cell>
+                            <s-text variant="heading-md">{grupo[0].model}</s-text>
+                          </s-table-cell>
+                          <s-table-cell>
+                            <s-button
+                              variant="tertiary"
+                              size="slim"
+                              onClick={() => setOpenVariantGroupIdx(openVariantGroupIdx === idx ? null : idx)}
+                            >
+                              {openVariantGroupIdx === idx ? 'Ocultar variantes' : 'Ver variantes'}
+                            </s-button>
+                          </s-table-cell>
+                        </s-table-row>
+                        {/* Variantes en acordeón */}
+                        {openVariantGroupIdx === idx && (
+                          <s-table-row>
+                            <s-table-cell colSpan={2}>
+                              <div className={styles.variantAccordion}>
+                                <s-stack gap="tight">
+                                  {grupo.map((v, vIdx) => (
+                                    <s-box key={vIdx} background="subdued" borderRadius="base" padding="tight">
+                                      <s-text variant="body-xs" fontWeight="semibold">
+                                        {v.title || v.model}
+                                      </s-text>
+                                      <s-text variant="body-xs" tone="subdued">
+                                        Color: {v.color || 'N/A'}
+                                      </s-text>
+                                      <s-text variant="body-xs" tone="success">
+                                        Precio: {v.price || 'N/A'}
+                                      </s-text>
+                                    </s-box>
+                                  ))}
+                                </s-stack>
+                              </div>
+                            </s-table-cell>
+                          </s-table-row>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </s-table-body>
+                </s-table>
               </s-stack>
             </s-card>
           </s-section>
