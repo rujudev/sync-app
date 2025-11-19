@@ -5,6 +5,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import COLOR_MAP from '../../color-dictionary.json';
+import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
 import {
   GET_PRODUCT_MEDIA,
   GET_PRODUCT_VARIANTS,
@@ -666,12 +667,13 @@ async function processGroup(admin, groupId, groupItems) {
 export async function syncXmlString(admin, xmlString) {
   
   try {
+    resetCancelFlag(); // Reinicia el flag de cancelación al inicio
     log("🔄 Starting syncXmlString ...");
     const result = await fetch(xmlString);
     const xml = await result.text();
-  
+
     const rawItems = parseXmlItems(xml);
-    
+
     sendProgress({
       type: "sync-start",
       message: "Sincronización iniciada",
@@ -680,7 +682,7 @@ export async function syncXmlString(admin, xmlString) {
 
     const normalized = rawItems.map(normalizeFeedItem);
     const groups = groupByModelKey(normalized);
-  
+
     sendProgress({
       type: "groups-detected",
       totalGroups: Object.keys(groups).length
@@ -688,6 +690,11 @@ export async function syncXmlString(admin, xmlString) {
 
     const results = {};
     for (const [groupId, groupItems] of Object.entries(groups)) {
+      if (wasCancelled()) {
+        log("🛑 Sincronización cancelada por el usuario.");
+        sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
+        break;
+      }
       try {
         sendProgress({
           type: "group-start",
@@ -714,10 +721,10 @@ export async function syncXmlString(admin, xmlString) {
     }
 
     sendProgress({
-      type: "sync-end",
+      type: wasCancelled() ? "sync-cancelled" : "sync-end",
       results
     });
-    log("✅ sync finished");
+    log(wasCancelled() ? "🛑 sync cancelled" : "✅ sync finished");
   } catch (err) {
     log("❌ syncXmlString error:", err);
     sendProgress({ step: "sync-error", error: err?.message || String(err) });

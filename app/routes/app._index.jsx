@@ -109,13 +109,22 @@ export default function Index() {
   const [grupos, setGrupos] = useState([]);
 
   // Función para limpiar todo el estado de importación
-  const resetImportState = () => {
+  const resetImportState = async () => {
     setProcessedProducts([]);
     setCurrentPage(1);
-    setSyncState(null);
+    setSyncState((prev) => ({
+      ...prev,
+      isActive: false,
+      status: "cancelled",
+      currentStep: "Importación cancelada por el usuario"
+    }));
     if (eventSourceRef) {
-      eventSourceRef.close();
-      setEventSourceRef(null);
+      eventSourceRef.close?.();
+    }
+    try {
+      await fetch("/api/sync-cancel");
+    } catch (e) {
+      console.warn("No se pudo notificar la cancelación al backend", e);
     }
   };
 
@@ -530,8 +539,23 @@ export default function Index() {
           </s-section>
         )}
 
-        {/* MENSAJE DE ERROR */}
-        {actionData?.error && (
+        {/* MENSAJE DE CANCELACIÓN O ERROR */}
+        {syncState?.status === "cancelled" ? (
+          <s-section>
+            <s-card>
+              <s-banner tone="warning">
+                <s-stack gap="tight">
+                  <s-text variant="body-md" fontWeight="semibold">
+                    🛑 Importación cancelada por el usuario
+                  </s-text>
+                  <s-text variant="body-sm" tone="subdued">
+                    Puedes iniciar una nueva importación cuando lo desees.
+                  </s-text>
+                </s-stack>
+              </s-banner>
+            </s-card>
+          </s-section>
+        ) : actionData?.error && (
           <s-section>
             <s-card>
               <s-banner tone="critical">
