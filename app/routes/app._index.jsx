@@ -473,51 +473,6 @@ export default function Index() {
           </s-section>
         )}
 
-        {/* FEED DE PRODUCTOS EN TIEMPO REAL */}
-        {/* syncState?.recentProducts?.length > 0 && (
-          <s-section>
-            <s-card>
-              <s-stack gap="base">
-                <s-stack gap="base" horizontal alignment="space-between">
-                  <s-text variant="heading-sm" fontWeight="semibold">
-                    🔄 Feed en Tiempo Real
-                  </s-text>
-                  <s-badge tone="info">
-                    {syncState.recentProducts.length} productos recientes
-                  </s-badge>
-                </s-stack>
-
-                <s-list>
-                  {syncState.recentProducts.map((item) => (
-                    <s-list-item key={item.id}>
-                      <s-box direction="inline" paddingBlock="base">
-                        <s-stack direction="inline" alignItems="stretch" justifyContent="space-between">
-                          <s-badge
-                            tone={
-                              item.type === 'created' ? 'success' :
-                                item.type === 'updated' ? 'info' :
-                                  item.type === 'product_error' ? 'critical' : 'warning'
-                            }
-                            size="small"
-                          >
-                            {PROCESSED_TYPE[item.type]?.toUpperCase()}
-                          </s-badge>
-                          <s-text variant="body-sm" fontWeight="semibold">
-                            {item.title}
-                          </s-text>
-                          <s-badge tone="neutral" size="small">
-                            SKU: {item.sku || 'N/A'}
-                          </s-badge>
-                        </s-stack>
-                      </s-box>
-                    </s-list-item>
-                  ))}
-                </s-list>
-              </s-stack>
-            </s-card>
-          </s-section>
-        ) */}
-
         {/* MENSAJE DE ÉXITO INICIAL */}
         {actionData?.success && !syncState?.isActive && (
           <s-section>
