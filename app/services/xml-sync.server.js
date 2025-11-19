@@ -40,7 +40,6 @@ const xmlParser = new XMLParser({ ignoreAttributes: false });
 
 function parseXmlItems(xmlString) {
   const json = xmlParser.parse(xmlString);
-  console.log(json)
   const items = json?.rss?.channel?.item || [];
   return Array.isArray(items) ? items : [items];
 }
@@ -152,7 +151,6 @@ function normalizeFeedItem(item) {
   };
 }
 
-
 function groupByModelKey(items) {
   const groups = {};
   for (const item of items) {
@@ -215,9 +213,7 @@ async function findExistingProduct(admin, group) {
     const searchResults = await res.json();
     const edges = searchResults?.data?.products?.edges || [];
 
-    log(`🔍 Búsqueda de producto existente con handle='${handle}' arrojó ${edges.length} resultados.`);
     if (edges.length > 0) {
-      log(`✅ Producto encontrado por '${title}': ${edges[0].node.title}`);
       return edges[0].node;
     }
   } catch (err) {
@@ -231,13 +227,29 @@ async function findExistingProduct(admin, group) {
 function buildShopifyProductObject(group) {
   const base = group[0];
 
+  log("Building Shopify product for model:", { ...group });
+
+  const CONDITION = {
+    new: "nuevo",
+    refurbished: "reacondicionado",
+    used: "usado"
+  }
+
   const title = base.modelTitle;
+  
+  const capacities = uniqStrings(group.map(v => v.capacity ));
+  const colors = uniqStrings(group.map(v => v.color));
+  const conditions = uniqStrings(group.map(v => v.condition));
+  
+  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'Apple';
 
-  const capacities = uniqStrings(group.map(v => v.capacity )).map(c => ({ name: c }));
-  const colors = uniqStrings(group.map(v => v.color)).map(c => ({ name: c }));
-  const conditions = uniqStrings(group.map(v => v.condition)).map(c => ({ name: c }));
-
-  console.table({ capacities, colors, conditions });
+  const tags = [
+    conditions.map(c => CONDITION[c] || c).join(", "),
+    base.brand.toLowerCase(),
+    so.toLowerCase(),
+    base.color,
+    base.capacity,
+  ]
 
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
 
@@ -256,12 +268,13 @@ function buildShopifyProductObject(group) {
 
   return {
     title,
+    tags,
     vendor: "Cosladafon",
     descriptionHtml: base.description || "",
     productOptions: [
-      { name: "Capacidad", values: capacities },
-      { name: "Color", values: colors },
-      { name: "Condición", values: conditions }
+      { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
+      { name: "Color", values: colors.map(c => ({ name: c })) },
+      { name: "Condición", values: conditions.map(c => ({ name: c })) }
     ],
     images,
     variants
@@ -283,23 +296,6 @@ function convertVariantForShopify(newVar, imageMap) {
   };
 }
 
-function filterNewImages(existingProduct, newImages) {
-  if (!existingProduct?.images?.edges) return newImages;
-
-  const existingUrls = existingProduct.images.edges.map(i => i.node.url);
-  return newImages.filter(img => !existingUrls.includes(img.originalSrc));
-}
-
-function buildImageMap(product) {
-  const map = {};
-  if (!product?.images?.edges) return map;
-
-  for (const edge of product.images.edges) {
-    map[edge.node.url] = edge.node.id;
-  }
-  return map;
-}
-
 function variantNeedsUpdate(existingVar, newVar) {
   if (existingVar.price !== newVar.price) return true;
   if (existingVar.sku !== newVar.sku) return true;
@@ -311,37 +307,14 @@ function variantNeedsUpdate(existingVar, newVar) {
   return newOpts !== existOpts;
 }
 
-async function processVariantBatches(admin, productId, variants, isUpdate = false) {
-  const size = 50;
-  for (let i = 0; i < variants.length; i += size) {
-    const batch = variants.slice(i, i + size);
-
-    if (batch.length === 0) continue;
-
-    if (isUpdate) {
-      await adminGraphql(admin, VARIANTS_UPDATE, {
-        productId,
-        variants: batch
-      });
-    } else {
-      await adminGraphql(admin, VARIANTS_CREATE, {
-        productId,
-        variants: batch
-      });
-    }
-  }
-}
-
 // ====================== Create Product (with handle & tags & media) ======================
 async function createShopifyProduct(admin, productObj, groupId = null) {
   // build input, include handle & tag for future searches
   const input = { ...productObj };
   
-  log(`input before handle/tags:`, { ...input });
   if (groupId) {
     const handle = String(groupId).toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 80);
     input.handle = handle;
-    input.tags = Array.from(new Set([...(input.tags || []), String(groupId)]));
   }
 
   sendProgress({ step: "product-create-request", title: input.title, groupId });
@@ -351,15 +324,6 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
       type: "product-create-request",
       title: input.title,
       groupId
-    });
-
-    log(`🔄 Creating product:`, {
-      title: input.title,
-      vendor: input.vendor,
-      descriptionHtml: input.descriptionHtml,
-      handle: input.handle,
-      tags: input.tags,
-      productOptions: input.productOptions,
     });
 
     input.productOptions.forEach((opt) => log(" - Option:", opt.name, "Values:", opt.values.map(v => v.name).join(", ")));
@@ -375,8 +339,6 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
     
     const productResult = await response.json();
     const productData = productResult?.data?.productCreate?.product;
-
-    log(`✅ Created product:`, { ...productData });
 
     return { success: true, product: productData };
   } catch (err) {
@@ -452,17 +414,11 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   let created = 0;
   let updated = 0;
 
-  log('Existing')
-  log('================ Sync existing product =================');
-
   sendProgress({
     type: "variants-sync-start",
     productId: existing.id,
     groupId
   });
-
-  log(`🔄 Syncing existing product:`, { ...existing });
-  log(`With productObj:`, { ...productObj });
 
   let imageMap = {};
 
@@ -477,12 +433,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
       media.forEach((img) => log(" - Uploading image:", img.originalSource));
       
-      const productCreateMediaRes = await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
-      const productCreateMediaData = await productCreateMediaRes.json();
-      const productCreatedMedia = productCreateMediaData.data.productUpdate.product;
-
-      log(`✅ Uploaded media for product ${existing.id}:`, { ...productCreatedMedia });
-
+      await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
 
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
@@ -502,8 +453,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
-  log(`Image map built:`, { ...imageMap });
-
   const variantsToUpdate = [];
   const variantsToCreate = [];
 
@@ -518,8 +467,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     // try match by sku, barcode, or optionValues
     // const selectedOptions = (variant.optionValues || []).map((ov) => ({ name: ov.optionName || ov.name || "", value: ov.name || "" }));
     const match = findVariant(productVariants, variant);
-
-    log(`Se ha encontrado la variante:`, { match, variant });
 
     if (match) {
       if (variantNeedsUpdate(match, variant)) {
@@ -540,12 +487,8 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
     
     const converted = variantsToCreate.map(v => ({ ...convertVariantForShopify(v, imageMap) }));
-    // const variantsRes = await processVariantBatches(admin, existing.id, converted, false);
     
-    converted.forEach(v => log("➕ Creating variant:", { ...v }));
-
     try {
-      log(`Existing product ID: ${existing.id}`);
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
         productId: existing.id,
         variants: converted
@@ -553,16 +496,11 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   
       const variantsData = await variantsCreateRes.json();
 
-      log(`Variants data after creation:`, { ...variantsData });
-
       if (variantsData?.data?.productVariantsBulkCreate?.userErrors?.length) {
         log("⚠️ Variant creation errors:", variantsData.data.productVariantsBulkCreate.userErrors);
       } else {
-        log(`➕ Created ${converted.length} variants for product ${existing.id}`);
+        created += converted.length;
       }
-      const productVariants = variantsData?.data?.productVariantsBulkCreate?.productVariants || [];
-  
-      productVariants?.forEach(v => log("➕ Created variant:", { ...v }));
     } catch (err) {
       log("⚠️ Error creating variants:", err);
     }
@@ -578,9 +516,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
     const converted = variantsToUpdate.map(v => ({ id: v.id, ...convertVariantForShopify(v, imageMap)}) );
 
-    log(`🔁 Updating variants:`);
-    console.table({ converted });
-
     // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
     const variantsUpdateRes = await adminGraphql(admin, VARIANTS_UPDATE, {
       productId: existing.id,
@@ -592,7 +527,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     if (errs?.length) {
       log("⚠️ Variant update errors:", errs);
     } else {
-      log(`🔁 Updated ${converted.length} variants for product ${existing.id}`);
       updated += converted.length;
     }
   }
@@ -607,8 +541,6 @@ async function processGroup(admin, groupId, groupItems) {
     groupId,
     count: groupItems.length
   });
-
-  log(`➡️ Processing groupId='${groupId}' (${groupItems.length} items)`);
 
   const publicationsRes = await adminGraphql(admin, GET_PUBLICATIONS);
   const publicationsData = await publicationsRes.json();
@@ -637,20 +569,15 @@ async function processGroup(admin, groupId, groupItems) {
         result: { success, product }
       });
 
-      log(`Success: ${success}, created product:`, { ...product });
-
       const synced = await syncExistingProduct(admin, { id: product.id }, productObj, groupId);
 
       sendProgress({ step: "group-updated", groupId, result: synced });
 
-      log(`📢 Publishing product ${product.id} to publications:`, publicationsIDs);
-      await adminGraphql(admin, PUBLISH_PRODUCT, {
+     await adminGraphql(admin, PUBLISH_PRODUCT, {
         id: product.id,
         input: publicationsIDs
       });
   
-      log(`📢 Published product`);
-
       return { success, product }
     } catch (err) {
       log("⚠️ Error creating product en processGroup:", err);
