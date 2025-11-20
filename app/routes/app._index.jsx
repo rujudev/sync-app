@@ -182,9 +182,10 @@ export default function Index() {
     es.addEventListener("groups-detected", e => {
       const d = JSON.parse(e.data);
 
+      console.log(d.groups);
       setSyncState(prev => ({
         ...prev,
-        currentStep: `Detectados ${d.totalGroups} grupos`
+        currentStep: `Detectados ${Object.keys(d.groups).length} grupos`
       }));
     });
 
