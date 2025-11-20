@@ -13,9 +13,7 @@ database.sqlite
 .env
 .env.*
 
-
-
-
+.DS_Store
 
 /extensions/*/dist
 
