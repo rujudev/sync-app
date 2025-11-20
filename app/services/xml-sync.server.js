@@ -4,7 +4,8 @@
 // eventos SSE (attachSendProgress/sendProgress), logs detallados y procesamiento paralelo.
 
 import { XMLParser } from "fast-xml-parser";
-import COLOR_MAP from '../../color-dictionary.json';
+import { COLORS } from '../constants/colors.js';
+import { MODELS } from '../constants/models.js';
 import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
 import {
   GET_PRODUCT_MEDIA,
@@ -18,12 +19,10 @@ import {
   VARIANTS_UPDATE
 } from '../shopify/queries';
 
-// ====================== CONFIG & UTIL ======================
 export const CONFIG = { LOG: true, RETRIES: 3, RETRY_BASE_DELAY_MS: 200 };
 export const log = (...args) => CONFIG.LOG && console.log(new Date().toISOString(), ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ====================== SEND EVENTS (SSE hook) ======================
 let _sendProgress = null;
 export function attachSendProgress(fn) {
   _sendProgress = fn;
@@ -35,7 +34,6 @@ function sendProgress(event) {
   }
 }
 
-// ====================== XML PARSER & NORMALIZER ======================
 const xmlParser = new XMLParser({ ignoreAttributes: false });
 
 function parseXmlItems(xmlString) {
@@ -44,7 +42,6 @@ function parseXmlItems(xmlString) {
   return Array.isArray(items) ? items : [items];
 }
 
-// ----------------- Normalización helpers -----------------
 function normalizeText(s = "") {
   return String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // quita acentos
     .replace(/[^\w\s-]/g, " ") // reemplaza símbolos por espacio
@@ -53,37 +50,52 @@ function normalizeText(s = "") {
     .toLowerCase();
 }
 
-// Extrae un título "modelo" limpio: quita capacidad, color, paréntesis y tokens comunes
 function extractModelTitle(title = "", brand = "") {
-  if (!title) return (brand || "").trim();
-  let t = String(title);
+  if (!title) return brand || "";
 
-  // 1) quitar partes entre paréntesis: "(Negro)" etc.
-  t = t.replace(/\([^)]+\)/g, " ");
+  let t = title.trim();
 
-  // 2) quitar capacidades tipo "128GB", "1TB"
-  t = t.replace(/\b\d{1,4}\s?(GB|TB)\b/ig, " ");
+  // 1) Quitar paréntesis
+  t = t.replace(/\([^)]*\)/g, " ");
 
-  // 3) quitar tokens de color que aparezcan como palabras sueltas
-  t = t.replace(/\b(negro|azul|gris|rojo|blanco|verde|amarillo|morado|rosa|plateado|crema|naranja|violeta|grafito|gold|silver|pink|black|white)\b/ig, " ");
+  // 2) Quitar capacidades
+  t = t.replace(/\b\d{1,4}\s?(gb|tb)\b/gi, " ");
 
-  // 4) eliminar dobles espacios y trim
-  t = t.replace(/\s+/g, " ").trim();
-
-  // 5) quitar marcas o sufijos SKU si hay (ej: "SM-721B" o "S908B/DS")
-  t = t.replace(/\b[Ss]\w{2,}-?\w*\b/g, " "); // heurística suave
-
-  // 6) prefijar la marca si no está incluida en el título
-  if (brand && !new RegExp(brand, "i").test(t)) {
-    t = `${brand} ${t}`;
+  // 3) Quitar colores reales detectados
+  const sortedColors = [...COLORS].sort((a, b) => b.length - a.length);
+  for (const col of sortedColors) {
+    t = t.replace(
+      new RegExp(`\\b${col.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"),
+      " "
+    );
   }
 
-  // normalizar caps: capitalizamos cada palabra para el title final
-  return t.split(" ").filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(" ");
+  // 4) Expandir sufijos pegados al número (S25FE → S25 FE)
+  MODELS.forEach(suf => {
+    t = t.replace(new RegExp(`(\\d)(${suf})`, "i"), "$1 $2");
+  });
+
+  // 5) Normalizar espacios
+  t = t.replace(/\s+/g, " ").trim();
+
+  // 6) Capitalizar
+  t = t
+    .split(" ")
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+
+  // 7) Añadir marca si no está al principio
+  if (brand) {
+    const b = brand.toLowerCase();
+    if (!t.toLowerCase().startsWith(b + " ")) {
+      t = `${brand} ${t}`;
+    }
+  }
+
+  return t;
 }
 
 function computeModelKey(title, brand) {
-  // clave consistente para agrupar; minúsculas, sin acentos, sin signos
   return normalizeText(extractModelTitle(title, brand));
 }
 
@@ -99,33 +111,6 @@ function normalizeFeedItem(item) {
 
   const capacityMatch = title.match(/(\d{1,4}GB|\d{1,4}TB)/i);
 
-  // detecta color preferentemente desde <g:color>
-  let colorRaw = (get("color") || "").toLowerCase().trim();
-
-  // si no hay <g:color>, intenta extraer del título (paréntesis y últimos tokens)
-  if (!colorRaw) {
-    // 1) prueba contenido entre paréntesis
-    const parenMatch = (title.match(/\(([^)]+)\)/) || [null, ""])[1].trim();
-    if (parenMatch) {
-      colorRaw = parenMatch.toLowerCase().trim();
-    } else {
-      // 2) intenta token final del título (últimas 1-3 palabras) si no son capacidades/sku
-      const tailMatch = title.match(/(?:\b)([A-Za-zÀ-ÿ'\- ]{2,40})$/);
-      if (tailMatch && !/\d/.test(tailMatch[1])) {
-        colorRaw = tailMatch[1].toLowerCase().trim();
-      }
-    }
-  }
-
-  // normalizar múltiples variantes encontradas (ej: "graphite" -> "grafito")
-  colorRaw = (colorRaw || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-
-  // si colorRaw contiene separadores, quedarse con la parte relevante
-  colorRaw = colorRaw.split(/[\/,|-]/)[0].trim();
-
-  // aplicar traducción si existe
-  const colorFinal = COLOR_MAP[colorRaw] || colorRaw || "sin color";
-
   const modelTitle = extractModelTitle(title, brand);
   const modelKey = computeModelKey(title, brand);
 
@@ -138,10 +123,11 @@ function normalizeFeedItem(item) {
     title,
     modelTitle,
     modelKey,
-    description: (get("description") || "").replace(/Cosladafon/g, "Secondtech"),
+    description: (get("description") || "").replace(/Cosladafon/gi, "Secondtech"),
     brand,
     capacity: capacityMatch ? capacityMatch[1].toUpperCase() : "Estándar",
-    color: (colorFinal || "Sin color").toLowerCase(),
+    // color: (colorFinal || "Sin color").toLowerCase(),
+    color: get("color").toLowerCase(),
     condition: (get("condition") || "new").toLowerCase(),
     price: parseFloat(priceRaw) || null,
     image: get("image_link") || null,
@@ -161,7 +147,6 @@ function groupByModelKey(items) {
   return groups;
 }
 
-// ====================== GraphQL helper + withRetry ======================
 async function withRetry(fn, retries = CONFIG.RETRIES, baseDelay = CONFIG.RETRY_BASE_DELAY_MS) {
   let attempt = 0;
   while (true) {
@@ -244,11 +229,8 @@ function buildShopifyProductObject(group) {
   const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'Apple';
 
   const tags = [
-    conditions.map(c => CONDITION[c] || c).join(", "),
     base.brand.toLowerCase(),
     so.toLowerCase(),
-    base.color,
-    base.capacity,
   ]
 
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
@@ -409,7 +391,6 @@ async function getProductMediaWithRetry(admin, productId, maxRetries = 5, delayM
   return [];
 }
 
-// ====================== Sync existing product (variants create/update + optional media) ======================
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
   let created = 0;
   let updated = 0;
@@ -430,8 +411,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         originalSource: img.originalSrc,
         alt: `${productObj.title} - ${i + 1}`
       }));
-
-      media.forEach((img) => log(" - Uploading image:", img.originalSource));
       
       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
@@ -534,7 +513,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   return { created, updated };
 }
 
-// ====================== Process single group ======================
 async function processGroup(admin, groupId, groupItems) {
   sendProgress({
     type: "processing-group",
@@ -590,7 +568,6 @@ async function processGroup(admin, groupId, groupItems) {
   return { success: false, product: null };
 }
 
-// ====================== Main sync entrypoint ======================
 export async function syncXmlString(admin, xmlString) {
   
   try {
@@ -612,7 +589,7 @@ export async function syncXmlString(admin, xmlString) {
 
     sendProgress({
       type: "groups-detected",
-      totalGroups: Object.keys(groups).length
+      groups
     });
 
     const results = {};
