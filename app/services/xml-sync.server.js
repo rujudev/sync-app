@@ -261,7 +261,7 @@ function buildShopifyProductObject(group) {
     optionValues: [
       { optionName: "Capacidad", name: v.capacity },
       { optionName: "Color", name: v.color },
-      { optionName: "Condición", name: v.condition },
+      { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
     ],
     image: v.image || null
   }));
@@ -274,7 +274,7 @@ function buildShopifyProductObject(group) {
     productOptions: [
       { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
       { name: "Color", values: colors.map(c => ({ name: c })) },
-      { name: "Condición", values: conditions.map(c => ({ name: c })) }
+      { name: "Condición", values: conditions.map(c => ({ name: CONDITION[c] || c })) }
     ],
     images,
     variants
