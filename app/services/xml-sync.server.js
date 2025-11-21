@@ -44,7 +44,7 @@ function parseXmlItems(xmlString) {
 
 function normalizeText(s = "") {
   return String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // quita acentos
-    .replace(/[^\w\s-]/g, " ") // reemplaza símbolos por espacio
+    .replace(/[^\w\s-+]/g, " ") // reemplaza símbolos por espacio
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -78,13 +78,22 @@ function extractModelTitle(title = "", brand = "") {
   // 5) Normalizar espacios
   t = t.replace(/\s+/g, " ").trim();
 
-  // 6) Capitalizar
+  // 6) Mantener el símbolo "+" en el modelo
+  t = t.replace(/(\w)\s*\+\s*/g, "$1+");
+
+  // 7) Eliminar conectividad (3G, 4G, 5G) y todo lo que venga a la derecha
+  t = t.replace(/\s*[345]\s?g.*$/i, "");
+
+  // 8) Eliminar especificaciones de SIM (Dual SIM, Single SIM, DS, Doble SIM, duos)
+  t = t.replace(/\b(dual sim|single sim|doble sim|ds|duos)\b.*$/i, "");
+  
+  // 9) Capitalizar
   t = t
     .split(" ")
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
 
-  // 7) Añadir marca si no está al principio
+  // 10) Añadir marca si no está al principio
   if (brand) {
     const b = brand.toLowerCase();
     if (!t.toLowerCase().startsWith(b + " ")) {
@@ -212,8 +221,6 @@ async function findExistingProduct(admin, group) {
 function buildShopifyProductObject(group) {
   const base = group[0];
 
-  log("Building Shopify product for model:", { ...group });
-
   const CONDITION = {
     new: "nuevo",
     refurbished: "reacondicionado",
@@ -235,18 +242,24 @@ function buildShopifyProductObject(group) {
 
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
 
-  const variants = group.map((v) => ({
-    sku: v.sku,
-    barcode: String(v.gtin) || null,
-    price: v.price != null ? Number(v.price).toFixed(2) : "0.00",
-    inventoryPolicy: "CONTINUE",
-    optionValues: [
-      { optionName: "Capacidad", name: v.capacity },
-      { optionName: "Color", name: v.color },
-      { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
-    ],
-    image: v.image || null
-  }));
+  const variants = group.map((v) => {
+    const variant = {
+      sku: v.sku,
+      barcode: String(v.gtin) || null,
+      price: v.price != null ? Number(v.price).toFixed(2) : "0.00",
+      inventoryPolicy: "CONTINUE",
+      optionValues: [
+        { optionName: "Capacidad", name: v.capacity },
+        { optionName: "Color", name: v.color },
+        { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
+      ],
+      image: v.image || null
+    }
+
+    variant.normalizedOptions = normalizeOptions(variant.optionValues);
+
+    return variant;
+  });
 
   return {
     title,
@@ -278,18 +291,58 @@ function convertVariantForShopify(newVar, imageMap) {
   };
 }
 
-function variantNeedsUpdate(existingVar, newVar) {
-  if (existingVar.price !== newVar.price) return true;
-  if (existingVar.sku !== newVar.sku) return true;
-  if (existingVar.barcode !== newVar.barcode) return true;
-
-  const newOpts = newVar.optionValues.map(o => `${o.optionName}:${o.name}`).join("|");
-  const existOpts = existingVar.selectedOptions.map(o => `${o.name}:${o.value}`).join("|");
-
-  return newOpts !== existOpts;
+// ===================================================
+// SANEAR VARIANTES PARA GRAPHQL (NO ENVIAR CAMPOS INTERNOS)
+// ===================================================
+function sanitizeVariantForGraphQL(v) {
+  const { normalizedOptions, currentMediaId, image, ...clean } = v;
+  return clean;
 }
 
+// ===================================================
+// NORMALIZACIÓN DE OPCIONES
+// ===================================================
+function normalizeOptions(arr = []) {
+  return arr
+    .map(opt => ({
+      name: (opt.name || opt.optionName || "").trim().toLowerCase(),
+      value: (opt.value || opt.name || "").trim().toLowerCase()
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// function variantNeedsUpdate(existingVar, newVar) {
+//   if (existingVar.price !== newVar.price) return true;
+//   if (existingVar.sku !== newVar.sku) return true;
+//   if (existingVar.barcode !== newVar.barcode) return true;
+
+//   const newOpts = newVar.optionValues.map(o => `${o.optionName}:${o.name}`).join("|");
+//   const existOpts = existingVar.selectedOptions.map(o => `${o.name}:${o.value}`).join("|");
+
+//   return newOpts !== existOpts;
+// }
+
 // ====================== Create Product (with handle & tags & media) ======================
+
+// ===================================================
+// DETECTAR SI UNA VARIANTE NECESITA ACTUALIZARSE
+// ===================================================
+
+function variantNeedsUpdate(existingVar, newVar) {
+  const norm = s => String(s || "").trim().toLowerCase();
+
+  if (Number(existingVar.price) !== Number(newVar.price)) return true;
+  if (norm(existingVar.sku) !== norm(newVar.sku)) return true;
+  if (norm(existingVar.barcode) !== norm(newVar.barcode)) return true;
+
+  if ((existingVar.currentMediaId || null) !== (newVar.mediaId || null)) {
+    return true;
+  }
+
+  const key = v => JSON.stringify(v.normalizedOptions);
+  return key(existingVar) !== key(newVar);
+}
+
 async function createShopifyProduct(admin, productObj, groupId = null) {
   // build input, include handle & tag for future searches
   const input = { ...productObj };
@@ -366,7 +419,7 @@ function buildImageMapByMatching(productObj, uploadedNodes) {
 
     // buscar cuál media subida contiene ese baseName
     const found = uploadedNodes.find(node =>
-      node?.preview?.image?.url?.includes(base)
+      node?.preview?.image?.url?.includes(base.replace(/\+/g, '_'))
     );
 
     if (found) {
@@ -391,6 +444,18 @@ async function getProductMediaWithRetry(admin, productId, maxRetries = 5, delayM
   return [];
 }
 
+// ===================================================
+// DETECTAR VARIANTES DUPLICADAS
+// ===================================================
+function isDuplicateVariant(arr, variant) {
+  const key = v => JSON.stringify(v.normalizedOptions);
+  return arr.some(v =>
+    v.sku === variant.sku ||
+    v.barcode === variant.barcode ||
+    key(v) === key(variant)
+  );
+}
+
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
   let created = 0;
   let updated = 0;
@@ -402,6 +467,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   });
 
   let imageMap = {};
+  let uploadedMediaNodes = [];
 
   // If productObj has images, try to upload them (won't automatically link to variants here)
   if (productObj.images && productObj.images.length) {
@@ -413,7 +479,9 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       }));
       
       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
+      
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
+      uploadedMediaNodes = newGetProductMediaRes;
 
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
       
@@ -432,6 +500,8 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
+  log(`Imagemap for product ${productObj.title}:`, { ...imageMap });
+
   const variantsToUpdate = [];
   const variantsToCreate = [];
 
@@ -441,18 +511,49 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   const productVariantsData = await productVariantsRes.json();
   const productVariants = productVariantsData?.data?.productVariants?.nodes || [];
 
+  productVariants.forEach(v => {
+    v.normalizedOptions = normalizeOptions(v.selectedOptions);
+
+    const imgUrl = v?.image?.url || null;
+    if (imgUrl) {
+      const base = extractBaseName(imgUrl);
+      const foundMedia = uploadedMediaNodes.find(node =>
+        node?.preview?.image?.url?.includes(base)
+      );
+      v.currentMediaId = foundMedia?.id || null;
+    } else {
+      v.currentMediaId = null;
+    }
+  })
+
   // iterate variants
   for (const variant of productObj.variants) {
-    // try match by sku, barcode, or optionValues
-    // const selectedOptions = (variant.optionValues || []).map((ov) => ({ name: ov.optionName || ov.name || "", value: ov.name || "" }));
+    variant.mediaId = imageMap[variant.image] || null;
+    log('Product variant to process: ', variant)
     const match = findVariant(productVariants, variant);
 
     if (match) {
-      if (variantNeedsUpdate(match, variant)) {
-        variantsToUpdate.push({ ...variant, selectedOptions: variant.optionValues, id: match.id });
+      // Preparamos variante para actualización con opciones normalizadas
+      const variantForUpdate = {
+        ...variant,
+        id: match.id,
+        selectedOptions: variant.optionValues,
+        normalizedOptions: variant.normalizedOptions
+      };
+
+      // Evitar duplicados y detectar cambios reales
+      if (
+        variantNeedsUpdate(match, variantForUpdate) &&
+        !isDuplicateVariant(variantsToUpdate, variantForUpdate)
+      ) {
+        variantsToUpdate.push(variantForUpdate);
       }
+
     } else {
-      variantsToCreate.push(variant)
+      // Evitar crear duplicados en Shopify
+      if (!isDuplicateVariant(variantsToCreate, variant)) {
+        variantsToCreate.push(variant);
+      }
     }
   }
   
@@ -464,9 +565,30 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       groupId
     });
 
+    // log(
+    //   "Gonna create variants:",
+    //   variantsToCreate.map(c => ({
+    //     ...c,
+    //     id: c.id,
+    //     price: c.price,
+    //     barcode: c.barcode,
+    //     selectedOptions: c.optionValues
+    //   }))
+    // );
     
-    const converted = variantsToCreate.map(v => ({ ...convertVariantForShopify(v, imageMap) }));
+    const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
     
+    // log(
+    //   "Creating variants:",
+    //   converted.map(c => ({
+    //     ...c,
+    //     id: c.id,
+    //     price: c.price,
+    //     barcode: c.barcode,
+    //     selectedOptions: c.optionValues
+    //   }))
+    // );
+
     try {
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
         productId: existing.id,
@@ -493,20 +615,35 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       groupId
     });
 
-    const converted = variantsToUpdate.map(v => ({ id: v.id, ...convertVariantForShopify(v, imageMap)}) );
+    const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
 
-    // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
-    const variantsUpdateRes = await adminGraphql(admin, VARIANTS_UPDATE, {
-      productId: existing.id,
-      variants: converted
-    });
-    const variantsUpdateData = await variantsUpdateRes.json();
-    const errs = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors;
-    
-    if (errs?.length) {
-      log("⚠️ Variant update errors:", errs);
-    } else {
-      updated += converted.length;
+    // log(
+    //   "Updating variants:",
+    //   converted.map(c => ({
+    //     ...c,
+    //     id: c.id,
+    //     price: c.price,
+    //     barcode: c.barcode,
+    //     selectedOptions: c.optionValues
+    //   }))
+    // );
+
+    try {
+      // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
+      const variantsUpdateRes = await adminGraphql(admin, VARIANTS_UPDATE, {
+        productId: existing.id,
+        variants: converted
+      });
+      const variantsUpdateData = await variantsUpdateRes.json();
+      const errs = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors;
+      
+      if (errs?.length) {
+        log("⚠️ Variant update errors:", errs);
+      } else {
+        updated += converted.length;
+      }
+    } catch (err) {
+      log("⚠️ Error updating variants:", err);
     }
   }
 
