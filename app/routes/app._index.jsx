@@ -353,6 +353,20 @@ export default function Index() {
                         syncState?.status === 'syncing' ? "🚀 Procesando..." :
                           "📥 Importar Productos"}
                     </s-button>
+                    {import.meta.env.MODE === 'development' && (
+                      <s-button
+                        variant="secondary"
+                        size="large"
+                        onClick={async () => {
+                          const result = await fetch("/api/get-colors", { method: "POST" });
+                          const data = await result.json();
+                          console.log("🎨 COLORES OBTENIDOS:", data.colors);
+                          alert("Colores obtenidos. Mira la consola.");
+                        }}
+                      >
+                        🎨 Obtener colores existentes
+                      </s-button>
+                    )}
                     <s-button
                       variant="secondary"
                       size="large"
