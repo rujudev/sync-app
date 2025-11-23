@@ -319,7 +319,7 @@ function normalizeOptions(arr = []) {
 //   const newOpts = newVar.optionValues.map(o => `${o.optionName}:${o.name}`).join("|");
 //   const existOpts = existingVar.selectedOptions.map(o => `${o.name}:${o.value}`).join("|");
 
-//   return newOpts !== existOpts;
+//   return newOpts !== existOpts; 
 // }
 
 // ====================== Create Product (with handle & tags & media) ======================
@@ -389,7 +389,7 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
 // ====================== Find variant helper ======================
 function findVariant(existingVariants, newVariant) {
   // Busca variante por sku, barcode o combinación exacta de opciones
-  return (
+    return (
     existingVariants.find(ev =>
       ev.sku === newVariant.sku ||
       ev.barcode === newVariant.barcode ||
@@ -447,13 +447,36 @@ async function getProductMediaWithRetry(admin, productId, maxRetries = 5, delayM
 // ===================================================
 // DETECTAR VARIANTES DUPLICADAS
 // ===================================================
-function isDuplicateVariant(arr, variant) {
-  const key = v => JSON.stringify(v.normalizedOptions);
-  return arr.some(v =>
-    v.sku === variant.sku ||
-    v.barcode === variant.barcode ||
-    key(v) === key(variant)
-  );
+function isDuplicateVariant(existing, variant) {
+  const keys = ["capacidad", "color", "condición"];
+
+  // Convierte optionValues → objeto plano {capacidad: '256gb', color: 'gris espacial', ...}
+  const normalizeOptions = variant => {
+    const obj = {};
+
+    for (const opt of variant.optionValues || []) {
+      const optionKey = (opt.optionName || "").toLowerCase().trim();
+      const optionValue = (opt.name || "").toLowerCase().trim();
+      obj[optionKey] = optionValue;
+    }
+
+    return obj;
+  };
+
+  const newObj = normalizeOptions(variant);
+
+  return existing.some(ev => {
+    const existingObj = normalizeOptions(ev);
+
+    // comparar solo los keys relevantes
+    return keys.every(key => existingObj[key] === newObj[key]);
+  });
+  // const key = v => JSON.stringify(v.normalizedOptions);
+  // return arr.some(v =>
+  //   v.sku === variant.sku ||
+  //   v.barcode === variant.barcode ||
+  //   key(v) === key(variant)
+  // );
 }
 
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
@@ -483,6 +506,18 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
       uploadedMediaNodes = newGetProductMediaRes;
 
+      // if (groupId === 'apple iphone 8') {
+      //   log(
+      //     "Uploaded media for iphone 8:",
+      //     newGetProductMediaRes.map(m => ({
+      //       id: m.id,
+      //       url: m.preview?.image?.url
+      //     }))
+      //   );
+
+      //   log(`ProductObj iphone 8: `, { ...productObj});
+      // }
+
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
       
       sendProgress({
@@ -500,7 +535,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
-  log(`Imagemap for product ${productObj.title}:`, { ...imageMap });
+  // log(`Imagemap for product ${productObj.title}:`, { ...imageMap });
 
   const variantsToUpdate = [];
   const variantsToCreate = [];
@@ -526,6 +561,12 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   })
 
+  // if (groupId === 'apple iphone 8') {
+  //   log(
+  //     "ProductObj iphone 8: ", { ...productObj}
+  //   );
+  // }
+
   // iterate variants
   for (const variant of productObj.variants) {
     variant.mediaId = imageMap[variant.image] || null;
@@ -548,7 +589,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       ) {
         variantsToUpdate.push(variantForUpdate);
       }
-
     } else {
       // Evitar crear duplicados en Shopify
       if (!isDuplicateVariant(variantsToCreate, variant)) {
@@ -568,26 +608,25 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     // log(
     //   "Gonna create variants:",
     //   variantsToCreate.map(c => ({
-    //     ...c,
-    //     id: c.id,
-    //     price: c.price,
-    //     barcode: c.barcode,
-    //     selectedOptions: c.optionValues
+    //     ...c
     //   }))
     // );
     
     const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
-    
-    // log(
-    //   "Creating variants:",
-    //   converted.map(c => ({
-    //     ...c,
-    //     id: c.id,
-    //     price: c.price,
-    //     barcode: c.barcode,
-    //     selectedOptions: c.optionValues
-    //   }))
-    // );
+
+    // log('Group id: ', groupId);
+    // if (groupId === 'apple iphone 8') {
+    //   log(
+    //     "Creating variants iphone 8:",
+    //     converted.map(c => ({
+    //       ...c,
+    //       id: c.id,
+    //       price: c.price,
+    //       barcode: c.barcode,
+    //       selectedOptions: c.optionValues
+    //     }))
+    //   );
+    // }
 
     try {
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
@@ -617,16 +656,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
     const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
 
-    // log(
-    //   "Updating variants:",
-    //   converted.map(c => ({
-    //     ...c,
-    //     id: c.id,
-    //     price: c.price,
-    //     barcode: c.barcode,
-    //     selectedOptions: c.optionValues
-    //   }))
-    // );
+    // log(fr
 
     try {
       // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
