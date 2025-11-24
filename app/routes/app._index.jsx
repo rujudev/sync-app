@@ -1,7 +1,7 @@
 import { ProgressBar } from '@shopify/polaris';
 import '@shopify/polaris/build/esm/styles.css';
 import React, { useEffect, useState } from 'react';
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import styles from "./_index/styles.module.css";
 
@@ -48,23 +48,27 @@ export const action = async ({ request }) => {
 
     // Usar parseXMLData para obtener estadísticas de variantes y estructuración completa
     const { syncXmlString } = await import("../services/xml-sync.server.js");
+    let finalProducts = [];
 
     // Solo parsear (sin admin = solo parsing y estadísticas, no creación en Shopify)
-    const parsedProducts = await syncXmlString(admin, xmlUrl);
+    syncXmlString(admin, xmlUrl)
+      .then(parsedProducts => {
+        console.info(`📦 [ACTION] Parseados ${parsedProducts.length} productos con variantes - enviando al cliente`);
 
-    if (!parsedProducts || parsedProducts.length === 0) {
-      return Response.json({ error: "No se encontraron productos en el XML" }, { status: 400 });
-    }
+        if (!parsedProducts || parsedProducts.length === 0) {
+          return Response.json({ error: "No se encontraron productos en el XML" }, { status: 400 });
+        }
 
-    console.error(`📦 [ACTION] Parseados ${parsedProducts.length} productos con variantes - enviando al cliente`);
+        finalProducts = parsedProducts;
+      });
 
     const shopDomain = session.shop.replace('.myshopify.com', '');
 
     // Devolver productos parseados al cliente
     return Response.json({
       success: true,
-      totalProducts: parsedProducts.length,
-      products: parsedProducts, // ← Los productos van al cliente
+      totalProducts: finalProducts.length,
+      products: finalProducts, // ← Los productos van al cliente
       message: 'XML parseado exitosamente',
       shopDomain,
       parsedAt: new Date().toISOString()
@@ -91,17 +95,13 @@ export const loader = async ({ request }) => {
 };
 
 export default function Index() {
-  console.info('🎯 [CLIENT] Renderizando componente');
-
   const fetcher = useFetcher();
-  const loaderData = useLoaderData();
   const [syncState, setSyncState] = useState(null); // Estado unificado
 
   // Nuevo estado para la tabla de productos
   const [processedProducts, setProcessedProducts] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [productsPerPage] = useState(20);
-  const [eventSourceRef, setEventSourceRef] = useState(null);
   // Estado para controlar el desplegable de variantes por producto
   const [openVariantProductId, setOpenVariantProductId] = useState(null);
   // Nuevo estado para el acordeón de grupos
@@ -118,9 +118,7 @@ export default function Index() {
       status: "cancelled",
       currentStep: "Importación cancelada por el usuario"
     }));
-    if (eventSourceRef) {
-      eventSourceRef.close?.();
-    }
+
     try {
       await fetch("/api/sync-cancel");
     } catch (e) {
@@ -136,14 +134,6 @@ export default function Index() {
 
   const actionData = fetcher.data;
   const isLoading = fetcher.state === "submitting";
-
-  const PROCESSED_TYPE = {
-    'created': 'Creado',
-    'updated': 'Actualizado',
-    'skipped': 'Omitido',
-    'error': 'Error',
-    'product_error': 'Error'
-  }
 
   useEffect(() => {
     const es = new EventSource("/api/sync-events");
@@ -182,7 +172,7 @@ export default function Index() {
     es.addEventListener("groups-detected", e => {
       const d = JSON.parse(e.data);
 
-      console.log(d.groups);
+      console.log(d.groups)
       setSyncState(prev => ({
         ...prev,
         currentStep: `Detectados ${Object.keys(d.groups).length} grupos`
@@ -214,6 +204,14 @@ export default function Index() {
           ...((prev.recentProducts || []).slice(0, 9))
         ]
       }));
+    });
+
+    es.addEventListener("product-media-uploaded", e => {
+      const d = JSON.parse(e.data);
+    });
+
+    es.addEventListener("product-media-added", e => {
+      const d = JSON.parse(e.data);
     });
 
     es.addEventListener("product-create-request", e => {
@@ -255,8 +253,17 @@ export default function Index() {
       }));
     });
 
+    es.addEventListener("group-error", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        groupId: d.groupId,
+        error: d.error
+      }))
+    });
+
     es.addEventListener("sync-end", e => {
-      console.log("Fin de sync:", JSON.parse(e.data));
       es.close();
     });
 
@@ -267,15 +274,9 @@ export default function Index() {
   useEffect(() => {
     if (!actionData?.success || !actionData?.products) return;
 
-    const startTime = performance.now();
-    console.warn(`🎯 [CLIENT] ${Date.now()} - Productos recibidos del action, iniciando procesamiento...`);
-    console.warn('🎯 [CLIENT] Productos:', actionData.products.length, 'Shop:', actionData.shopDomain);
-
     // Llamar al endpoint de procesamiento
     const startProcessing = async () => {
       try {
-        console.warn(`📤 [CLIENT] ${Date.now()} - Enviando productos para procesamiento...`);
-
         const response = await fetch('/api/process-products', {
           method: 'POST',
           headers: {
@@ -288,14 +289,9 @@ export default function Index() {
         });
 
         const result = await response.json();
-        const endTime = performance.now();
 
         if (result.success) {
-          console.warn(`✅ [CLIENT] ${Date.now()} - Procesamiento iniciado exitosamente (${Math.round(endTime - startTime)}ms)`);
-          console.warn('🔄 [CLIENT] Esperando eventos SSE...');
           setGrupos(result.grupos || []);
-        } else {
-          console.error('❌ [CLIENT] Error iniciando procesamiento:', result.error);
         }
 
       } catch (error) {
@@ -360,7 +356,7 @@ export default function Index() {
                         onClick={async () => {
                           const result = await fetch("/api/get-colors", { method: "POST" });
                           const data = await result.json();
-                          console.log("🎨 COLORES OBTENIDOS:", data.colors);
+                          // console.log("🎨 COLORES OBTENIDOS:", data.colors);
                           alert("Colores obtenidos. Mira la consola.");
                         }}
                       >
