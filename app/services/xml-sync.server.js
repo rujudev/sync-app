@@ -5,6 +5,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { COLORS } from '../constants/colors.js';
+import { FORBIDDEN_MODEL_WORDS } from '../constants/forbidden-words.js';
 import { MODELS } from '../constants/models.js';
 import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
 import {
@@ -50,10 +51,88 @@ function normalizeText(s = "") {
     .toLowerCase();
 }
 
+// function extractModelTitle(title = "", brand = "") {
+//   if (!title) return brand || "";
+
+//   let t = title.trim();
+
+//   // Reemplazar paréntesis que contienen números por su contenido sin paréntesis
+//   t = t.replace(/\(\s*([0-9]+)\s*\)/g, " $1 ");
+
+//   // 1) Quitar paréntesis
+//   t = t.replace(/\([^)]*\)/g, " ");
+
+//   // 2) Quitar capacidades
+//   t = t.replace(/\b\d{1,4}\s?(gb|tb)\b/gi, " ");
+
+//   // 3) Quitar colores reales detectados
+//   const sortedColors = [...COLORS].sort((a, b) => b.length - a.length);
+//   for (const col of sortedColors) {
+//     t = t.replace(
+//       new RegExp(`\\b${col.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"),
+//       " "
+//     );
+//   }
+
+//   // 3B) Quitar palabras prohibidas (aurora, forest, dazzling, beauty...)
+//   FORBIDDEN_MODEL_WORDS.forEach(w => {
+//     const rx = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+//     t = t.replace(rx, " ");
+//   });
+
+//   // 4) FIX “Galax y”
+//   t = t.replace(/\bgalax\s*y\b/gi, "galaxy");
+
+//   // 5) Eliminar códigos Samsung SM-XXXX, SM XXXX, SMXXXX
+//   t = t.replace(/\bsm[-\s]?[a-z0-9]{3,7}\b/gi, " ");
+
+//   // 6) Eliminar códigos tipo G975F, S901B, F731U, A326B
+//   t = t.replace(/\b[gsaf][0-9]{3,5}[a-z]{0,2}\b/gi, " ");
+
+//   // 7) Expandir sufijos pegados al número (S25FE → S25 FE)
+//   MODELS.forEach(suf => {
+//     t = t.replace(new RegExp(`(\\d)(${suf})`, "i"), "$1 $2");
+//   });
+
+//   // 8) Normalizar espacios
+//   t = t.replace(/\s+/g, " ").trim();
+
+//   // 9) Mantener el símbolo "+" en el modelo
+//   t = t.replace(/(\w)\s*\+\s*/g, "$1+");
+
+//   // 10) Eliminar 512 que se añade tras SM-XXXX
+//   t = t.replace(/\b(128|256|512|1024)\b/gi, " ");
+
+//   // 11) Eliminar conectividad (3G, 4G, 5G) y todo lo que venga a la derecha
+//   t = t.replace(/\s*[345]\s?g.*$/i, "");
+
+//   // 12) Eliminar especificaciones de SIM (Dual SIM, Single SIM, DS, Doble SIM, duos)
+//   t = t.replace(/\b(dual sim|single sim|doble sim|ds|duos)\b.*$/i, "");
+  
+//   // 13) Capitalizar
+//   t = t
+//     .split(" ")
+//     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+//     .join(" ");
+
+//   // 14) Añadir marca si no está al principio
+//   if (brand) {
+//     const b = brand.toLowerCase();
+//     if (!t.toLowerCase().startsWith(b + " ")) {
+//       t = `${brand} ${t}`;
+//     }
+//   }
+
+//   return t;
+// }
+
 function extractModelTitle(title = "", brand = "") {
   if (!title) return brand || "";
 
   let t = title.trim();
+
+  // Reemplazar paréntesis que contienen números por su contenido sin paréntesis
+  t = t.replace(/\(\s*([0-9]+)\s*\)/g, " $1 ");
 
   // 1) Quitar paréntesis
   t = t.replace(/\([^)]*\)/g, " ");
@@ -70,30 +149,62 @@ function extractModelTitle(title = "", brand = "") {
     );
   }
 
-  // 4) Expandir sufijos pegados al número (S25FE → S25 FE)
+  // 3B) Quitar palabras prohibidas (aurora, forest, dazzling, beauty...)
+  FORBIDDEN_MODEL_WORDS.forEach(w => {
+    const rx = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+    t = t.replace(rx, " ");
+  });
+
+  // 4) FIX “Galax y”
+  t = t.replace(/\bgalax\s*y\b/gi, "galaxy");
+
+  // 4B) FIX “Galazy”
+  t = t.replace(/\bgalazy\b/gi, "galaxy");
+
+  // 4C) Normalizar Flip (flip4, flip 4, zflip4, z flip 4, etc.)
+  t = t.replace(/\bz\s*flip\s*([0-9])\b/gi, "Z Flip$1");
+  t = t.replace(/\bflip\s*([0-9])\b/gi, "Flip$1");
+
+  // 4D) Normalizar Fold (fold4, fold 4, zfold4, z fold 4, etc.)
+  t = t.replace(/\bz\s*fold\s*([0-9])\b/gi, "Z Fold$1");
+  t = t.replace(/\bfold\s*([0-9])\b/gi, "Fold$1");
+
+  // 4E) Normalizar FE pegado (flip7FE → flip7 FE)
+  t = t.replace(/(Flip|Fold)(\d+)\s*fe/i, "$1$2 FE");
+
+  // 5) Eliminar códigos Samsung SM-XXXX, SM XXXX, SMXXXX
+  t = t.replace(/\bsm[-\s]?[a-z0-9]{3,7}\b/gi, " ");
+
+  // 6) Eliminar códigos tipo G975F, S901B, F731U, A326B (versión más segura)
+  t = t.replace(/\b[gsaf][0-9]{3,5}[a-z]{1,3}\b/gi, " ");
+
+  // 7) Eliminar 128/256/512/1024 sueltos
+  t = t.replace(/\b(128|256|512|1024)\b/gi, " ");
+
+  // 8) Expandir sufijos pegados al número (S25FE → S25 FE)
   MODELS.forEach(suf => {
     t = t.replace(new RegExp(`(\\d)(${suf})`, "i"), "$1 $2");
   });
 
-  // 5) Normalizar espacios
+  // 9) Normalizar espacios
   t = t.replace(/\s+/g, " ").trim();
 
-  // 6) Mantener el símbolo "+" en el modelo
+  // 10) Mantener el símbolo "+" en el modelo
   t = t.replace(/(\w)\s*\+\s*/g, "$1+");
 
-  // 7) Eliminar conectividad (3G, 4G, 5G) y todo lo que venga a la derecha
+  // 11) Eliminar conectividad (3G, 4G, 5G) y todo lo que venga a la derecha
   t = t.replace(/\s*[345]\s?g.*$/i, "");
 
-  // 8) Eliminar especificaciones de SIM (Dual SIM, Single SIM, DS, Doble SIM, duos)
+  // 12) Eliminar especificaciones de SIM
   t = t.replace(/\b(dual sim|single sim|doble sim|ds|duos)\b.*$/i, "");
-  
-  // 9) Capitalizar
+
+  // 13) Capitalizar
   t = t
     .split(" ")
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
 
-  // 10) Añadir marca si no está al principio
+  // 14) Añadir marca si no está al principio
   if (brand) {
     const b = brand.toLowerCase();
     if (!t.toLowerCase().startsWith(b + " ")) {
@@ -103,6 +214,7 @@ function extractModelTitle(title = "", brand = "") {
 
   return t;
 }
+
 
 function computeModelKey(title, brand) {
   return normalizeText(extractModelTitle(title, brand));
@@ -311,17 +423,6 @@ function normalizeOptions(arr = []) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// function variantNeedsUpdate(existingVar, newVar) {
-//   if (existingVar.price !== newVar.price) return true;
-//   if (existingVar.sku !== newVar.sku) return true;
-//   if (existingVar.barcode !== newVar.barcode) return true;
-
-//   const newOpts = newVar.optionValues.map(o => `${o.optionName}:${o.name}`).join("|");
-//   const existOpts = existingVar.selectedOptions.map(o => `${o.name}:${o.value}`).join("|");
-
-//   return newOpts !== existOpts; 
-// }
-
 // ====================== Create Product (with handle & tags & media) ======================
 
 // ===================================================
@@ -430,15 +531,17 @@ function buildImageMapByMatching(productObj, uploadedNodes) {
   return map;
 }
 
-async function getProductMediaWithRetry(admin, productId, maxRetries = 5, delayMs = 2000) {
+async function getProductMediaWithRetry(admin, productId, maxRetries = 10, delayMs = 2000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const res = await adminGraphql(admin, GET_PRODUCT_MEDIA, { id: productId });
     const data = await res.json();
     const mediaNodes = data?.data?.product?.media?.nodes || []
     const urls = mediaNodes.map(m => m.preview?.image?.url).filter(Boolean);
+    
     if (urls.length > 0) {
       return mediaNodes;
     }
+
     await new Promise(r => setTimeout(r, delayMs));
   }
   return [];
@@ -471,12 +574,6 @@ function isDuplicateVariant(existing, variant) {
     // comparar solo los keys relevantes
     return keys.every(key => existingObj[key] === newObj[key]);
   });
-  // const key = v => JSON.stringify(v.normalizedOptions);
-  // return arr.some(v =>
-  //   v.sku === variant.sku ||
-  //   v.barcode === variant.barcode ||
-  //   key(v) === key(variant)
-  // );
 }
 
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
@@ -502,21 +599,25 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       }));
       
       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
+
+      sendProgress({
+        type: "product-media-uploaded",
+        productId: existing.id,
+        groupId,
+        count: media.length,
+        media
+      })
       
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
+
+      sendProgress({
+        type: "product-media-added",
+        productId: existing.id,
+        groupId,
+        newGetProductMediaRes
+      });
+
       uploadedMediaNodes = newGetProductMediaRes;
-
-      // if (groupId === 'apple iphone 8') {
-      //   log(
-      //     "Uploaded media for iphone 8:",
-      //     newGetProductMediaRes.map(m => ({
-      //       id: m.id,
-      //       url: m.preview?.image?.url
-      //     }))
-      //   );
-
-      //   log(`ProductObj iphone 8: `, { ...productObj});
-      // }
 
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
       
@@ -595,6 +696,20 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         variantsToCreate.push(variant);
       }
     }
+  }
+
+  if (groupId === 'samsung galaxy s23 ultra') {
+    log(
+      "Variants to create for S23 Ultra:",
+      variantsToCreate.map(c => ({
+        ...c,
+        price: c.price,
+        barcode: c.barcode,
+        selectedOptions: c.optionValues
+      }))
+    );
+
+    log(`Imagemap for product S23 Ultra:`, { ...imageMap });
   }
   
   if (variantsToCreate.length > 0) {
