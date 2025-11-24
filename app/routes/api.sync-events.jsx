@@ -14,6 +14,16 @@ export const loader = async ({ request }) => {
         );
       };
 
+      const interval = setInterval(() => {
+        send("ping", { t: Date.now() });
+      }, 20000); // 20s recomendado (Cloudflare idle timeout ≈ 100s)
+
+      // Registrar limpiador si el cliente cierra la conexión
+      controller.signal?.addEventListener("abort", () => {
+        clearInterval(interval);
+        console.log("🔌 SSE abortada → limpiado heartbeat");
+      });
+
       // Registramos la función para que xml-sync.server.js la use
       attachSendProgress((event) => {
         const evtType = event.type || event.step || "log";
