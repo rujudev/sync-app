@@ -1,7 +1,8 @@
 import { ProgressBar } from '@shopify/polaris';
 import '@shopify/polaris/build/esm/styles.css';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useFetcher } from "react-router";
+import Pagination from '../components/Pagination.jsx';
 import { authenticate } from "../shopify.server.js";
 import styles from "./_index/styles.module.css";
 
@@ -53,8 +54,6 @@ export const action = async ({ request }) => {
     // Solo parsear (sin admin = solo parsing y estadísticas, no creación en Shopify)
     syncXmlString(admin, xmlUrl)
       .then(parsedProducts => {
-        console.info(`📦 [ACTION] Parseados ${parsedProducts.length} productos con variantes - enviando al cliente`);
-
         if (!parsedProducts || parsedProducts.length === 0) {
           return Response.json({ error: "No se encontraron productos en el XML" }, { status: 400 });
         }
@@ -98,20 +97,11 @@ export default function Index() {
   const fetcher = useFetcher();
   const [syncState, setSyncState] = useState(null); // Estado unificado
 
-  // Nuevo estado para la tabla de productos
-  const [processedProducts, setProcessedProducts] = useState([]);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [productsPerPage] = useState(20);
-  // Estado para controlar el desplegable de variantes por producto
-  const [openVariantProductId, setOpenVariantProductId] = useState(null);
-  // Nuevo estado para el acordeón de grupos
-  const [openVariantGroupIdx, setOpenVariantGroupIdx] = useState(null);
-  const [grupos, setGrupos] = useState([]);
+  const [groupStatus, setGroupStatus] = useState([]);
+  const [variantStatusByGroup, setVariantStatusByGroup] = useState({});
 
   // Función para limpiar todo el estado de importación
   const resetImportState = async () => {
-    setProcessedProducts([]);
-    setCurrentPage(1);
     setSyncState((prev) => ({
       ...prev,
       isActive: false,
@@ -126,14 +116,43 @@ export default function Index() {
     }
   };
 
-  // Cálculo de paginación
-  const totalPages = Math.ceil((processedProducts?.length || 0) / productsPerPage);
-  const startIndex = (currentPage - 1) * productsPerPage;
-  const endIndex = startIndex + productsPerPage;
-  const currentProducts = (processedProducts || []).slice(startIndex, endIndex);
-
   const actionData = fetcher.data;
   const isLoading = fetcher.state === "submitting";
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+
+  const totalPages = Math.ceil(groupStatus.filter(g => g.status !== "pending").length / pageSize);
+  const paginated = groupStatus
+    .sort((a, b) => {
+      const order = {
+        processing: 0,
+        error: 1,
+        pending: 2,
+        success: 3,
+      };
+
+      return order[a.status] - order[b.status];
+    })
+    .filter(g => g.status !== "pending").slice((page - 1) * pageSize, page * pageSize);
+
+  const groupStatusTotals = useMemo(() => {
+    let created = 0, updated = 0, skipped = 0, errors = 0;
+
+    for (const g of groupStatus) {
+      created += g.created || 0;
+      updated += g.updated || 0;
+      skipped += g.skipped || 0;
+      errors += g.errors || 0;
+    }
+
+    return {
+      created,
+      updated,
+      skipped,
+      errors,
+      totalProcessedProducts: created + updated + skipped + errors
+    };
+  }, [groupStatus])
 
   useEffect(() => {
     const es = new EventSource("/api/sync-events");
@@ -169,31 +188,95 @@ export default function Index() {
       }));
     });
 
+    es.addEventListener("groups_list", (e) => {
+      const d = JSON.parse(e.data);
+
+      setGroupStatus(
+        d.groups.map(g => ({
+          id: g,
+          name: g,
+          status: 'pending',
+          error: null,
+        })
+        ));
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Detectados ${d.groups.length} grupos`
+      }));
+    });
+
     es.addEventListener("groups-detected", e => {
       const d = JSON.parse(e.data);
 
-      console.log(d.groups)
       setSyncState(prev => ({
         ...prev,
         currentStep: `Detectados ${Object.keys(d.groups).length} grupos`
       }));
     });
 
-    es.addEventListener("group-start", e => {
+    es.addEventListener("group_start", e => {
       const d = JSON.parse(e.data);
-      setSyncState(prev => ({ ...prev, currentStep: `Iniciando grupo ${d.groupId}` }));
+
+      setGroupStatus(prev => {
+        return prev.map(g =>
+          g.id === d.id ? {
+            ...d,
+            status: "processing",
+            created: 0,
+            updated: 0,
+            skipped: 0,
+            errors: 0
+          } : g
+        )
+      });
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Iniciando grupo ${d.id}`
+      }));
     });
 
-    es.addEventListener("processing-group", e => {
+    es.addEventListener("group_end", e => {
+      const d = JSON.parse(e.data);
+
+      setGroupStatus(prev => {
+        return prev.map(g =>
+          g.id === d.id ? { ...g, status: "success" } : g
+        )
+      });
+    });
+
+    es.addEventListener("group_error", e => {
+      const d = JSON.parse(e.data);
+
+      setGroupStatus(prev =>
+        prev.map(g =>
+          g.id === d.id ? { ...g, status: "error", error: d.error } : g
+        )
+      );
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Error en grupo ${d.id}`,
+        errorItems: prev.errorItems + 1
+      }));
+    });
+
+    es.addEventListener("product_created", e => {
       const d = JSON.parse(e.data);
 
       setSyncState(prev => ({
         ...prev,
-        currentStep: `Procesando grupo ${d.groupId}`
+        currentStep: `Producto creado: ${d.product?.title || d.groupId}`,
+        recentProducts: [
+          { type: "created", title: d.product?.title, sku: null },
+          ...((prev.recentProducts || []).slice(0, 9))
+        ]
       }));
     });
 
-    es.addEventListener("group-created", e => {
+    es.addEventListener("product_create_request", e => {
       const d = JSON.parse(e.data);
 
       setSyncState(prev => ({
@@ -201,74 +284,176 @@ export default function Index() {
         currentStep: `Creando producto: ${d.title}`,
         recentProducts: [
           { type: "request", title: d.title, groupId: d.groupId },
-          ...((prev.recentProducts || []).slice(0, 9))
+          ...prev.recentProducts.slice(0, 9)
         ]
       }));
     });
 
-    es.addEventListener("product-media-uploaded", e => {
+    es.addEventListener("product_media_uploaded", e => {
       const d = JSON.parse(e.data);
-    });
-
-    es.addEventListener("product-media-added", e => {
-      const d = JSON.parse(e.data);
-    });
-
-    es.addEventListener("product-create-request", e => {
-      const d = JSON.parse(e.data);
-
-      // extraer título/sku si vienen en result.product
-      const title = d.result?.product?.title || d.result?.product?.id || d.groupId;
-      const sku = d.result?.product?.variants?.[0]?.sku || null;
 
       setSyncState(prev => ({
         ...prev,
-        createdItems: (prev.createdItems || 0) + 1,
-        processedItems: (prev.processedItems || 0) + 1,
-        currentStep: `Producto creado: ${title}`,
+        currentStep: `Imágenes subidas (${d.count}) para producto ${d.productId}`
+      }));
+    });
+
+    es.addEventListener("product_media_added", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Imágenes añadidas al producto ${d.productId}`
+      }));
+    });
+
+    es.addEventListener("product_synced", e => {
+      const d = JSON.parse(e.data);
+
+      setSyncState(prev => ({
+        ...prev,
+        processedItems: prev.processedItems + 1,
+        createdItems: prev.createdItems + (d.createdVariants || 0),
+        updatedItems: prev.updatedItems + (d.updatedVariants || 0),
+        currentStep: `Producto sincronizado (${d.createdVariants} creadas / ${d.updatedVariants} actualizadas)`,
         recentProducts: [
-          { type: "created", title, sku },
-          ...((prev.recentProducts || []).slice(0, 9))
+          {
+            type: "updated",
+            title: d.groupId,
+            created: d.createdVariants,
+            updated: d.updatedVariants
+          },
+          ...prev.recentProducts.slice(0, 9)
         ]
       }));
     });
 
-    es.addEventListener("group-updated", e => {
+    es.addEventListener("variant_create_detected", e => {
       const d = JSON.parse(e.data);
-      const createdInGroup = d.result?.created || 0;
-      const updatedInGroup = d.result?.updated || 0;
 
-      setSyncState(prev => ({
+      setVariantStatusByGroup(prev => ({
         ...prev,
-        // contamos el "grupo" como 1 processed (representa el producto principal)
-        processedItems: (prev.processedItems || 0) + 1,
-        // las variantes creadas/actualizadas acumuladas
-        createdItems: (prev.createdItems || 0) + createdInGroup,
-        updatedItems: (prev.updatedItems || 0) + updatedInGroup,
-        currentStep: `Grupo actualizado: ${d.groupId} (+${createdInGroup} / ~${updatedInGroup})`,
-        recentProducts: [
-          { type: "updated", title: d.groupId, created: createdInGroup, updated: updatedInGroup },
-          ...((prev.recentProducts || []).slice(0, 9))
-        ]
+        [d.groupId]: {
+          ...(prev[d.groupId] || {}),
+          [d.variant.sku]: {
+            status: "detected_create",
+            variant: d.variant
+          }
+        }
       }));
     });
 
-    es.addEventListener("group-error", e => {
+    es.addEventListener("variant_update_detected", e => {
       const d = JSON.parse(e.data);
+
+      setVariantStatusByGroup(prev => ({
+        ...prev,
+        [d.groupId]: {
+          ...(prev[d.groupId] || {}),
+          [d.variant.sku]: {
+            status: "detected_update",
+            variant: d.variant
+          }
+        }
+      }));
+    });
+
+    es.addEventListener("variant_processing_start", e => {
+      const d = JSON.parse(e.data);
+
+      setVariantStatusByGroup(prev => ({
+        ...prev,
+        [d.groupId]: {
+          ...prev[d.groupId],
+          [d.variant.sku]: {
+            status: "processing",
+            variant: d.variant
+          }
+        }
+      }));
+    });
+
+    es.addEventListener("variant_processing_success", e => {
+      const d = JSON.parse(e.data);
+
+      setVariantStatusByGroup(prev => ({
+        ...prev,
+        [d.groupId]: {
+          ...prev[d.groupId],
+          [d.variant.sku]: {
+            status: "success",
+            action: d.action,
+            variant: d.variant
+          }
+        }
+      }));
+
+      console.log("✅ Variante procesada:", { ...d });
+
+      setGroupStatus(prev =>
+        prev.map(g => {
+          if (g.id === d.groupId) {
+            console.log({
+              ...g,
+              created: g.created + (d.action === "created" ? 1 : 0),
+              updated: g.updated + (d.action === "updated" ? 1 : 0),
+              skipped: g.skipped + (d.action === "skipped" ? 1 : 0)
+            })
+          }
+
+          return g.id === d.groupId ? {
+            ...g,
+            created: g.created + (d.action === "created" ? 1 : 0),
+            updated: g.updated + (d.action === "updated" ? 1 : 0),
+            skipped: g.skipped + (d.action === "skipped" ? 1 : 0)
+          }
+            : g
+        }
+        )
+      )
+    });
+
+    es.addEventListener("variant_processing_error", e => {
+      const d = JSON.parse(e.data);
+
+      setVariantStatusByGroup(prev => ({
+        ...prev,
+        [d.groupId]: {
+          ...(prev[d.groupId] || {}),
+          [d.variant.sku || `error-${Date.now()}`]: {
+            status: "error",
+            message: d.message
+          }
+        }
+      }));
+
+      setGroupStatus(prev =>
+        prev.map(g =>
+          g.id === d.groupId ? {
+            ...g,
+            status: 'error',
+            errors: g.errors + 1
+          }
+            : g
+        )
+      )
+    });
+
+    es.addEventListener("sync-cancelled", e => {
+      const d = JSON.parse(e.data || "{}");
 
       setSyncState(prev => ({
         ...prev,
-        groupId: d.groupId,
-        error: d.error
-      }))
-    });
-
-    es.addEventListener("sync-end", e => {
-      es.close();
+        isActive: false,
+        status: "cancelled",
+        currentStep: d.message || "Sincronización cancelada por el usuario"
+      }));
     });
 
     return () => es.close();
   }, []);
+
+  useEffect(() => { console.log(variantStatusByGroup); }, [variantStatusByGroup]);
 
   // ✨ NUEVO: useEffect que inicia procesamiento cuando recibimos productos del action
   useEffect(() => {
@@ -277,7 +462,7 @@ export default function Index() {
     // Llamar al endpoint de procesamiento
     const startProcessing = async () => {
       try {
-        const response = await fetch('/api/process-products', {
+        await fetch('/api/process-products', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -287,12 +472,6 @@ export default function Index() {
             shopDomain: actionData.shopDomain
           })
         });
-
-        const result = await response.json();
-
-        if (result.success) {
-          setGrupos(result.grupos || []);
-        }
 
       } catch (error) {
         console.error('❌ [CLIENT] Error llamando procesamiento:', error);
@@ -398,16 +577,16 @@ export default function Index() {
                 {/* BARRA DE PROGRESO VISUAL */}
                 <s-stack rowGap="large">
                   <ProgressBar
-                    progress={((syncState?.processedItems || 0) / (syncState?.totalItems || 1)) * 100}
+                    progress={((groupStatusTotals.totalProcessedProducts || 0) / (syncState?.totalItems || 1)) * 100}
                     size="small"
                   />
                   <s-stack direction="inline" columnGap="base" blockSize="auto" justifyContent="center">
                     <s-text variant="body-sm" tone="subdued">
-                      {syncState?.processedItems || 0} / {syncState?.totalItems || 0} productos individuales
+                      {groupStatusTotals.totalProcessedProducts} / {syncState?.totalItems || 0} productos individuales
                     </s-text>
                     <s-divider direction="block" />
                     <s-text variant="caption" tone="subdued">
-                      {Math.round(((syncState?.processedItems || 0) / (syncState?.totalItems || 1)) * 100)}% completado
+                      {Math.round(((groupStatusTotals.totalProcessedProducts || 0) / (syncState?.totalItems || 1)) * 100)}% completado
                     </s-text>
                   </s-stack>
                 </s-stack>
@@ -420,10 +599,10 @@ export default function Index() {
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
                       <s-text accessibilityRole="" fontWeight="bold" tone="success" >
-                        {syncState?.createdItems || 0}
+                        {groupStatusTotals.created}
                       </s-text>
                       <s-badge tone="success" size="small">
-                        🆕 Nuevos
+                        🆕 Creados
                       </s-badge>
                     </s-stack>
                   </s-box>
@@ -432,7 +611,7 @@ export default function Index() {
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
                       <s-text variant="heading-lg" fontWeight="bold" tone="info">
-                        {syncState?.updatedItems || 0}
+                        {groupStatusTotals.updated}
                       </s-text>
                       <s-badge tone="info" size="small">
                         🔄 Actualizados
@@ -444,7 +623,7 @@ export default function Index() {
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
                       <s-text variant="heading-lg" fontWeight="bold" tone="warning">
-                        {syncState?.skippedItems || 0}
+                        {groupStatusTotals.skipped}
                       </s-text>
                       <s-badge tone="warning" size="small">
                         ⏭️ Omitidos
@@ -456,7 +635,7 @@ export default function Index() {
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
                       <s-text variant="heading-lg" fontWeight="bold" tone="critical">
-                        {syncState?.errorItems || 0}
+                        {groupStatusTotals.errors}
                       </s-text>
                       <s-badge tone="critical" size="small">
                         ❌ Errores
@@ -538,266 +717,251 @@ export default function Index() {
           </s-section>
         )}
 
-        {/* TABLA DE PRODUCTOS PROCESADOS */}
-        {(processedProducts?.length || 0) > 0 && (
+        {/* TABLA DE PRODUCTOS AGRUPADOS POR MODELO Y VARIANTES */}
+        {groupStatus.length > 0 && (
           <s-section>
-            <s-card>
-              <s-stack gap="large">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <s-text variant="heading-md" fontWeight="bold">
-                    📦 Productos Procesados ({processedProducts?.length || 0})
-                  </s-text>
-                  <s-text variant="body-sm" tone="subdued">
-                    Página {currentPage} de {totalPages}
-                  </s-text>
-                </div>
+            <s-box padding="500">
+              {/* Lista detallada de grupos */}
+              <s-stack vertical spacing="300">
+                <s-stack rowGap="large">
+                  {paginated
+                    .map(g => (
+                      <s-box key={g.id} padding="small" >
+                        <s-stack gap="small">
 
-                {/* TABLA DE PRODUCTOS */}
-                <s-table>
-                  <s-table-header-row>
-                    <s-table-header></s-table-header>
-                    <s-table-header listSlot="primary">Producto</s-table-header>
-                    <s-table-header listSlot="kicker">SKU</s-table-header>
-                    <s-table-header listSlot="kicker">Barcode</s-table-header>
-                    <s-table-header listSlot="labeled" format="currency">Precio</s-table-header>
-                    <s-table-header listSlot="inline">Acción</s-table-header>
-                    <s-table-header listSlot="inline">Marca</s-table-header>
-                    <s-table-header listSlot="inline">Color</s-table-header>
-                    <s-table-header listSlot="inline">Condición</s-table-header>
-                    <s-table-header listSlot="inline">Disponibilidad</s-table-header>
-                    <s-table-header></s-table-header>
-                  </s-table-header-row>
-                  <s-table-body>
-                    {(currentProducts || []).map((product) => {
-                      const rows = [];
-                      rows.push(
-                        <s-table-row key={product.id}>
-                          {/* Imagen */}
-                          <s-table-cell>
-                            <s-stack maxInlineSize="130px">
-                              <s-thumbnail
-                                src={product.imageUrl}
-                                alt={product.title}
-                                inlineSize="fill"
-                              />
+                          {/* CABECERA DEL GRUPO */}
+                          <s-stack direction="inline" alignment="space-between" gap="base">
+                            <s-stack direction="inline" alignment="center" gap="200">
+                              {/* icono/estado */}
+                              {g.status === "processing" ? (
+                                <s-spinner size="small" />
+                              ) : g.status === "pending" ? (
+                                <s-icon type="clock" tone="neutral" />
+                              ) : g.status === "success" ? (
+                                <s-icon type="check-circle-filled" tone="success" />
+                              ) : (
+                                <s-icon type="alert-circle" tone="critical" />
+                              )}
+
+                              <s-text variant="body-md" fontWeight="semibold" className="capitalize">
+                                <span className='capitalize'>{g.name || g.id}</span>
+                              </s-text>
                             </s-stack>
-                          </s-table-cell>
-                          {/* Título */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" fontWeight="semibold">
-                              {product.title}
-                            </s-text>
-                          </s-table-cell>
-                          {/* SKU */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.sku || 'N/A'}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Barcode */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.barcode || 'N/A'}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Precio */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {Array.isArray(product.variantDetails) && product.variantDetails.length > 0 ? '--' : (product.price || 'N/A')}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Acción */}
-                          <s-table-cell>
+
                             <s-badge
                               tone={
-                                product.type === 'created' ? 'success' :
-                                  product.type === 'updated' ? 'info' :
-                                    product.type === 'product_error' ? 'critical' : 'neutral'
+                                g.status === "processing" ? "info" :
+                                  g.status === "pending" ? "subdued" :
+                                    g.status === "success" ? "success" : "critical"
                               }
+                              size="small"
                             >
-                              {product.action}
+                              {g.status === "processing" && "En proceso…"}
+                              {g.status === "pending" && "Pendiente"}
+                              {g.status === "success" && "Completado"}
+                              {g.status === "error" && "Con errores"}
                             </s-badge>
-                          </s-table-cell>
-                          {/* Marca */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.brand || 'N/A'}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Color */}
-                          <s-table-cell>
-                            <s-text variant="body-sm" tone="subdued">
-                              {product.color || 'N/A'}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Condición */}
-                          <s-table-cell>
-                            <s-text variant="body-sm">
-                              {product.condition}
-                            </s-text>
-                          </s-table-cell>
-                          {/* Disponibilidad */}
-                          <s-table-cell>
-                            <s-badge tone={product.availability === 'in_stock' ? 'success' : 'warning'}>
-                              {product.availability === 'in_stock' ? 'En stock' : 'Agotado'}
-                            </s-badge>
-                          </s-table-cell>
-                          <s-table-cell>
-                            {Array.isArray(product.variantDetails) && product.variantDetails.length > 0 && (
-                              <s-button
-                                variant="tertiary"
-                                size="slim"
-                                onClick={() => setOpenVariantProductId(openVariantProductId === product.id ? null : product.id)}
-                              >
-                                {openVariantProductId === product.id ? 'Ocultar variantes' : 'Consultar variantes'}
-                              </s-button>
-                            )}
-                          </s-table-cell>
-                        </s-table-row>
-                      );
+                          </s-stack>
 
-                      if (openVariantProductId === product.id && Array.isArray(product.variantDetails) && product.variantDetails.length > 0) {
-                        rows.push(
-                          <s-table-row key={product.id + '-variants'}>
-                            <s-table-cell colSpan={11} style={{ background: '#f6f6f7', padding: '16px 24px' }}>
-                              <div className={styles.variantAccordion}>
-                                <s-stack gap="tight">
-                                  {product.variantDetails.map((v, idx) => (
-                                    <s-box key={idx} background="subdued" borderRadius="base" padding="tight">
-                                      <s-text variant="body-xs" fontWeight="semibold">
-                                        {v.title ? v.title : 'Variante'}
-                                      </s-text>
-                                      <s-text variant="body-xs" tone="subdued">
-                                        Color: {v.color || 'N/A'}
-                                      </s-text>
-                                      <s-text variant="body-xs" tone="success">
-                                        Precio: {v.price || 'N/A'}
-                                      </s-text>
+                          {/* RESUMEN NÚMEROS */}
+                          <s-stack direction="inline" columnGap="large" blockSize="auto" alignItems="center">
+                            <s-badge tone="success" size="small">🆕 Creadas {g.created || 0}</s-badge>
+                            <s-badge tone="info" size="small">🔄 Actualizadas {g.updated || 0}</s-badge>
+                            <s-badge tone="warning" size="small">⏭️ Omitidas {g.skipped || 0}</s-badge>
+                            {(g.errors || 0) > 0 && <s-badge tone="critical" size="small">❌ Errores {g.errors}</s-badge>}
+                            <s-text variant="caption" tone="subdued" style={{ marginLeft: 8 }}>
+                              {g.totalVariants ? `${g.totalVariants} variantes` : ''}
+                            </s-text>
+                          </s-stack>
+
+                          <s-divider />
+
+                          {/* VARIANTES: grid responsive */}
+                          {variantStatusByGroup[g.id] && (
+                            <s-grid gridTemplateColumns="repeat(auto-fit, minmax(360px, 1fr))" gap="base" paddingBlockStart="200">
+                              {Object.entries(variantStatusByGroup[g.id]).map(([sku, info]) => (
+                                <s-box key={sku} padding="base">
+                                  <s-stack direction="inline" alignment="start" columnGap="200">
+                                    {/* Thumbnail / imagen */}
+                                    <s-box blockSize="80px" inlineSize="80px" style={{ flex: '0 0 80px' }}>
+                                      <s-image src={info?.variant?.image || ''} alt={sku} inlineSize="fill" />
                                     </s-box>
-                                  ))}
-                                </s-stack>
-                              </div>
-                            </s-table-cell>
-                          </s-table-row>
-                        );
-                      }
-                      return rows;
-                    })}
-                  </s-table-body>
-                </s-table>
 
-                {/* PAGINACIÓN */}
-                <s-stack rowGap="large" direction="inline" alignItems="center" justifyContent="space-between">
-                  <s-stack alignment="center">
-                    <s-text variant="caption" tone="subdued">
-                      Mostrando {startIndex + 1} - {Math.min(endIndex, processedProducts?.length || 0)} de {processedProducts?.length || 0} productos
-                    </s-text>
-                  </s-stack>
-                  {totalPages > 1 && (
-                    <s-stack gap="base" direction="inline">
-                      <s-button
-                        variant="tertiary"
-                        onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                        disabled={currentPage === 1}
-                      >
-                        ← Anterior
-                      </s-button>
+                                    {/* Datos */}
+                                    <s-stack vertical spacing="100" style={{ flex: 1 }}>
+                                      <s-text variant="body-sm" fontWeight="medium">
+                                        {info?.variant?.capacity || ''} • {info?.variant?.color || ''} • {info?.variant?.condition || ''}
+                                      </s-text>
+                                      <s-text variant="caption" tone="subdued">{sku}</s-text>
 
-                      <s-stack gap="tight" direction="inline">
-                        {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                          const pageNum = Math.max(1, currentPage - 2) + i;
-                          if (pageNum <= totalPages) {
-                            return (
-                              <s-button
-                                key={pageNum}
-                                variant={currentPage === pageNum ? "primary" : "tertiary"}
-                                size="slim"
-                                onClick={() => setCurrentPage(pageNum)}
-                              >
-                                {pageNum}
-                              </s-button>
-                            );
-                          }
-                          return null;
-                        })}
-                      </s-stack>
+                                      {/* Estado / acción */}
+                                      <div style={{ marginTop: 8 }}>
+                                        {info?.status === "detected_create" && <s-badge tone="info">Detectada (crear)</s-badge>}
+                                        {info?.status === "detected_update" && <s-badge tone="info">Detectada (actualizar)</s-badge>}
 
-                      <s-button
-                        variant="tertiary"
-                        onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                        disabled={currentPage === totalPages}
-                      >
-                        Siguiente →
-                      </s-button>
-                    </s-stack>
-                  )}
+                                        {info?.status === "processing" && (
+                                          <s-badge tone="warning">
+                                            <s-stack direction="inline" alignment="center" gap="100">
+                                              <s-spinner size="small" /> Procesando…
+                                            </s-stack>
+                                          </s-badge>
+                                        )}
+
+                                        {info?.status === "success" && (
+                                          <s-badge
+                                            tone={info.action === "created"
+                                              ? "success"
+                                              : info.action === "updated"
+                                                ? "info"
+                                                : info.action === "skipped"
+                                                  ? "warning"
+                                                  : "critical"
+                                            }
+                                          >
+                                            {info.action === "created"
+                                              ? "Creada"
+                                              : info.action === "updated"
+                                                ? "Actualizada"
+                                                : info.action === "skipped"
+                                                  ? "Omitida"
+                                                  : "Error"
+                                            }
+                                          </s-badge>
+                                        )}
+
+                                        {info?.status === "error" && (
+                                          <s-badge tone="critical">Error{info.message ? `: ${info.message}` : ''}</s-badge>
+                                        )}
+                                      </div>
+                                    </s-stack>
+                                  </s-stack>
+                                </s-box>
+                              ))}
+                            </s-grid>
+                          )}
+                        </s-stack>
+                      </s-box>
+                      // <s-box
+                      //   key={g.id}
+                      //   padding="base"
+                      //   background={
+                      //     g.status === "success" ? "subdued" :
+                      //       g.status === "error" ? "strong" : "transparent"
+                      //   }
+                      //   borderRadius="large"
+                      //   borderWidth="base"
+                      //   borderColor={
+                      //     g.status === "success" ? "subdued" :
+                      //       g.status === "error" ? "strong" : "base"
+                      //   }
+                      // >
+                      //   <s-stack alignment="space-between" rowGap='large'>
+                      //     <s-stack gap="large-200">
+                      //       <s-stack direction='inline' spacing="300" alignment="center">
+                      //         <s-stack direction="inline">
+                      //           {g.status === "processing" ? (
+                      //             <s-spinner size="small" />
+                      //           ) : (
+                      //             <s-icon type={
+                      //               g.status === "pending" ? "clock" :
+                      //                 g.status === "success" ? "check-circle-filled" : null
+                      //             }
+                      //               tone={
+                      //                 g.status === "pending" ? "neutral" :
+                      //                   g.status === "success" ? "success" : null
+                      //               }
+                      //             />
+                      //           )}
+                      //           <s-text variant="bodyMd" fontWeight="semibold">
+                      //             <span className='capitalize'>{g.id}</span>
+                      //           </s-text>
+                      //         </s-stack>
+                      //       </s-stack>
+
+                      //       {/* Mensaje de error si existe */}
+                      //       {g.status === "error" && g.error && (
+                      //         <s-box paddingBlockStart="100">
+                      //           <s-banner tone="critical" hideIcon>
+                      //             <s-text variant="bodySm">
+                      //               {g.error}
+                      //             </s-text>
+                      //           </s-banner>
+                      //         </s-box>
+                      //       )}
+                      //     </s-stack>
+
+                      //     {variantStatusByGroup[g.id] && (
+                      //       <s-grid gridTemplateColumns="repeat(auto-fit, minmax(400px, 1fr))" gap="400" paddingBlockStart="200">
+                      //         {Object.entries(variantStatusByGroup[g.id]).map(([sku, info]) => (
+                      //           <s-stack
+                      //             key={sku}
+                      //             direction="inline"
+                      //             spacing="300"
+                      //             alignment="center"
+                      //             borderWidth="025"
+                      //             borderColor="border-subdued"
+                      //             padding="200"
+                      //             borderRadius="200"
+                      //           >
+                      //             <s-box blockSize='100px' inlineSize='100px'>
+                      //               <s-image
+                      //                 src={info?.variant?.image}
+                      //                 alt={info?.variant?.title || sku}
+                      //                 inlineSize="fill"
+                      //               />
+                      //             </s-box>
+
+                      //             {/* SKU / descripción */}
+                      //             <s-text variant="bodySm" fontWeight="medium">
+                      //               {info?.variant?.capacity} / {info?.variant?.color} / {info?.variant?.condition}
+                      //             </s-text>
+
+                      //             {/* ESTADOS */}
+                      //             {info?.status === "detected_create" && (
+                      //               <s-badge tone="info">Detectada (crear)</s-badge>
+                      //             )}
+
+                      //             {info?.status === "detected_update" && (
+                      //               <s-badge tone="info">Detectada (actualizar)</s-badge>
+                      //             )}
+
+                      //             {info?.status === "processing" && (
+                      //               <s-badge tone="warning">
+                      //                 <s-stack direction="inline" spacing="100" alignment="center">
+                      //                   <s-spinner size="small" /> Procesando…
+                      //                 </s-stack>
+                      //               </s-badge>
+                      //             )}
+
+                      //             {info?.status === "success" && (
+                      //               <s-badge tone="success">
+                      //                 {info.action === "created" ? "Creada" : "Actualizada"}
+                      //               </s-badge>
+                      //             )}
+
+                      //             {info.status === "error" && (
+                      //               <s-badge tone="critical">
+                      //                 Error: {info.message || "Desconocido"}
+                      //               </s-badge>
+                      //             )}
+                      //           </s-stack>
+                      //         ))}
+                      //       </s-grid>
+                      //     )}
+                      //   </s-stack>
+                      // </s-box>
+                    ))}
                 </s-stack>
               </s-stack>
-            </s-card>
-          </s-section>
-        )}
 
-        {/* TABLA DE PRODUCTOS AGRUPADOS POR MODELO Y VARIANTES */}
-        {grupos.length > 0 && (
-          <s-section>
-            <s-card>
-              <s-stack gap="large">
-                <s-text variant="heading-md" fontWeight="bold">
-                  📦 Productos Agrupados por Modelo ({grupos.length})
-                </s-text>
-                <s-table>
-                  <s-table-header-row>
-                    <s-table-header>Modelo</s-table-header>
-                    <s-table-header>Acción</s-table-header>
-                  </s-table-header-row>
-                  <s-table-body>
-                    {grupos.map((grupo, idx) => (
-                      <React.Fragment key={idx}>
-                        {/* Fila principal: modelo */}
-                        <s-table-row>
-                          <s-table-cell>
-                            <s-text variant="heading-md">{grupo[0].model}</s-text>
-                          </s-table-cell>
-                          <s-table-cell>
-                            <s-button
-                              variant="tertiary"
-                              size="slim"
-                              onClick={() => setOpenVariantGroupIdx(openVariantGroupIdx === idx ? null : idx)}
-                            >
-                              {openVariantGroupIdx === idx ? 'Ocultar variantes' : 'Ver variantes'}
-                            </s-button>
-                          </s-table-cell>
-                        </s-table-row>
-                        {/* Variantes en acordeón */}
-                        {openVariantGroupIdx === idx && (
-                          <s-table-row>
-                            <s-table-cell colSpan={2}>
-                              <div className={styles.variantAccordion}>
-                                <s-stack gap="tight">
-                                  {grupo.map((v, vIdx) => (
-                                    <s-box key={vIdx} background="subdued" borderRadius="base" padding="tight">
-                                      <s-text variant="body-xs" fontWeight="semibold">
-                                        {v.title || v.model}
-                                      </s-text>
-                                      <s-text variant="body-xs" tone="subdued">
-                                        Color: {v.color || 'N/A'}
-                                      </s-text>
-                                      <s-text variant="body-xs" tone="success">
-                                        Precio: {v.price || 'N/A'}
-                                      </s-text>
-                                    </s-box>
-                                  ))}
-                                </s-stack>
-                              </div>
-                            </s-table-cell>
-                          </s-table-row>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </s-table-body>
-                </s-table>
-              </s-stack>
-            </s-card>
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={groupStatus.length}
+                pageSize={pageSize}
+                onChange={newPage => setPage(newPage)}
+              />
+            </s-box>
           </s-section>
         )}
       </s-page>

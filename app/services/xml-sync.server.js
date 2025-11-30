@@ -24,6 +24,7 @@ export const CONFIG = { LOG: true, RETRIES: 3, RETRY_BASE_DELAY_MS: 200 };
 export const log = (...args) => CONFIG.LOG && console.log(new Date().toISOString(), ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const groupsState = {};
 let _sendProgress = null;
 export function attachSendProgress(fn) {
   _sendProgress = fn;
@@ -50,81 +51,6 @@ function normalizeText(s = "") {
     .trim()
     .toLowerCase();
 }
-
-// function extractModelTitle(title = "", brand = "") {
-//   if (!title) return brand || "";
-
-//   let t = title.trim();
-
-//   // Reemplazar paréntesis que contienen números por su contenido sin paréntesis
-//   t = t.replace(/\(\s*([0-9]+)\s*\)/g, " $1 ");
-
-//   // 1) Quitar paréntesis
-//   t = t.replace(/\([^)]*\)/g, " ");
-
-//   // 2) Quitar capacidades
-//   t = t.replace(/\b\d{1,4}\s?(gb|tb)\b/gi, " ");
-
-//   // 3) Quitar colores reales detectados
-//   const sortedColors = [...COLORS].sort((a, b) => b.length - a.length);
-//   for (const col of sortedColors) {
-//     t = t.replace(
-//       new RegExp(`\\b${col.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"),
-//       " "
-//     );
-//   }
-
-//   // 3B) Quitar palabras prohibidas (aurora, forest, dazzling, beauty...)
-//   FORBIDDEN_MODEL_WORDS.forEach(w => {
-//     const rx = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
-//     t = t.replace(rx, " ");
-//   });
-
-//   // 4) FIX “Galax y”
-//   t = t.replace(/\bgalax\s*y\b/gi, "galaxy");
-
-//   // 5) Eliminar códigos Samsung SM-XXXX, SM XXXX, SMXXXX
-//   t = t.replace(/\bsm[-\s]?[a-z0-9]{3,7}\b/gi, " ");
-
-//   // 6) Eliminar códigos tipo G975F, S901B, F731U, A326B
-//   t = t.replace(/\b[gsaf][0-9]{3,5}[a-z]{0,2}\b/gi, " ");
-
-//   // 7) Expandir sufijos pegados al número (S25FE → S25 FE)
-//   MODELS.forEach(suf => {
-//     t = t.replace(new RegExp(`(\\d)(${suf})`, "i"), "$1 $2");
-//   });
-
-//   // 8) Normalizar espacios
-//   t = t.replace(/\s+/g, " ").trim();
-
-//   // 9) Mantener el símbolo "+" en el modelo
-//   t = t.replace(/(\w)\s*\+\s*/g, "$1+");
-
-//   // 10) Eliminar 512 que se añade tras SM-XXXX
-//   t = t.replace(/\b(128|256|512|1024)\b/gi, " ");
-
-//   // 11) Eliminar conectividad (3G, 4G, 5G) y todo lo que venga a la derecha
-//   t = t.replace(/\s*[345]\s?g.*$/i, "");
-
-//   // 12) Eliminar especificaciones de SIM (Dual SIM, Single SIM, DS, Doble SIM, duos)
-//   t = t.replace(/\b(dual sim|single sim|doble sim|ds|duos)\b.*$/i, "");
-  
-//   // 13) Capitalizar
-//   t = t
-//     .split(" ")
-//     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-//     .join(" ");
-
-//   // 14) Añadir marca si no está al principio
-//   if (brand) {
-//     const b = brand.toLowerCase();
-//     if (!t.toLowerCase().startsWith(b + " ")) {
-//       t = `${brand} ${t}`;
-//     }
-//   }
-
-//   return t;
-// }
 
 function extractModelTitle(title = "", brand = "") {
   if (!title) return brand || "";
@@ -226,6 +152,10 @@ function uniqStrings(arr = []) {
 
 function normalizeFeedItem(item) {
   const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
+
+  const id = String(get("id") || "");
+
+  if (id.includes("TEST")) return null;
 
   const title = String(get("title") || "");
   const brand = String(get("brand") || "");
@@ -453,7 +383,11 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
     input.handle = handle;
   }
 
-  sendProgress({ step: "product-create-request", title: input.title, groupId });
+  sendProgress({
+    type: "product_create_request",
+    title: input.title,
+    groupId
+  });
 
   try {
     sendProgress({
@@ -601,32 +535,23 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
 
       sendProgress({
-        type: "product-media-uploaded",
+        type: "product_media_uploaded",
         productId: existing.id,
         groupId,
-        count: media.length,
-        media
-      })
+        count: media.length
+      });
       
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
 
       sendProgress({
-        type: "product-media-added",
+        type: "product_media_added",
         productId: existing.id,
-        groupId,
-        newGetProductMediaRes
+        groupId
       });
 
       uploadedMediaNodes = newGetProductMediaRes;
 
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
-      
-      sendProgress({
-        type: "product-media-added",
-        productId: existing.id,
-        groupId,
-        newGetProductMediaRes
-      });
     } catch (err) {
       log(`⚠️ Error uploading media for new product:`, err);
       if (err.body?.errors) {
@@ -662,16 +587,24 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   })
 
-  // if (groupId === 'apple iphone 8') {
-  //   log(
-  //     "ProductObj iphone 8: ", { ...productObj}
-  //   );
-  // }
-
+  groupsState[groupId].totalVariants += productObj.variants.length;
+  
   // iterate variants
   for (const variant of productObj.variants) {
+    sendProgress({
+      type: "variant_processing_start",
+      groupId,
+      productId: existing.id,
+      variant: {
+        sku: variant.sku,
+        image: variant.image,
+        capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+        color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+        condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+      }
+    });
+
     variant.mediaId = imageMap[variant.image] || null;
-    log('Product variant to process: ', variant)
     const match = findVariant(productVariants, variant);
 
     if (match) {
@@ -688,30 +621,67 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         variantNeedsUpdate(match, variantForUpdate) &&
         !isDuplicateVariant(variantsToUpdate, variantForUpdate)
       ) {
+        sendProgress({
+          type: "variant_update_detected",
+          groupId,
+          productId: existing.id,
+          variant: {
+            sku: variant.sku,
+            image: variant.image,
+            capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+            color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+            condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+          }
+        });
+
         variantsToUpdate.push(variantForUpdate);
+        continue;
       }
     } else {
       // Evitar crear duplicados en Shopify
       if (!isDuplicateVariant(variantsToCreate, variant)) {
+        sendProgress({
+          type: "variant_create_detected",
+          groupId,
+          productId: existing.id,
+          variant: {
+            sku: variant.sku,
+            image: variant.image,
+            capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+            color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+            condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+          }
+        });
+
         variantsToCreate.push(variant);
+        continue;
       }
+    }
+
+    sendProgress({
+      type: "variant_processing_success",
+      groupId,
+      productId: existing.id,
+      action: "skipped",
+      variant: {
+        sku: variant.sku,
+        image: variant.image,
+        capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+        color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+        condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+      }
+    });
+
+    groupsState[groupId].processedVariants++;
+
+    if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+      sendProgress({
+        type: groupsState[groupId].hasErrors ? "group_error" : "group_success",
+        id: groupId
+      });
     }
   }
 
-  if (groupId === 'samsung galaxy s23 ultra') {
-    log(
-      "Variants to create for S23 Ultra:",
-      variantsToCreate.map(c => ({
-        ...c,
-        price: c.price,
-        barcode: c.barcode,
-        selectedOptions: c.optionValues
-      }))
-    );
-
-    log(`Imagemap for product S23 Ultra:`, { ...imageMap });
-  }
-  
   if (variantsToCreate.length > 0) {
     sendProgress({
       step: "variants-batch-create",
@@ -719,29 +689,8 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       count: variantsToCreate.length,
       groupId
     });
-
-    // log(
-    //   "Gonna create variants:",
-    //   variantsToCreate.map(c => ({
-    //     ...c
-    //   }))
-    // );
     
     const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
-
-    // log('Group id: ', groupId);
-    // if (groupId === 'apple iphone 8') {
-    //   log(
-    //     "Creating variants iphone 8:",
-    //     converted.map(c => ({
-    //       ...c,
-    //       id: c.id,
-    //       price: c.price,
-    //       barcode: c.barcode,
-    //       selectedOptions: c.optionValues
-    //     }))
-    //   );
-    // }
 
     try {
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
@@ -750,11 +699,53 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       });
   
       const variantsData = await variantsCreateRes.json();
+      const variantsCreateError = variantsData?.data?.productVariantsBulkCreate?.userErrors || [];  
+      
+      if (variantsCreateError.length) {
+        variantsCreateError.forEach((err, index) => {
+          sendProgress({
+            type: "variant_processing_error",
+            groupId,
+            productId: existing.id,
+            message: err.message || "Error creando variante",
+            variant: variantsToCreate[index] || null
+          });
 
-      if (variantsData?.data?.productVariantsBulkCreate?.userErrors?.length) {
-        log("⚠️ Variant creation errors:", variantsData.data.productVariantsBulkCreate.userErrors);
+          groupsState[groupId].processedVariants++;
+          groupsState[groupId].hasErrors = true;
+
+          if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+            sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
+          }
+        });
       } else {
-        created += converted.length;
+        for (const v of variantsToCreate) {
+          // log('✅ Variante creada:', { ...v });
+          sendProgress({
+            type: "variant_processing_success",
+            groupId,
+            productId: existing.id,
+            action: "created",
+            variant: {
+              sku: v.sku,
+              image: v.image,
+              capacity: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+              color: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+              condition: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+            }
+          });
+
+          groupsState[groupId].processedVariants++;
+  
+          // Si todas las variantes han finalizado
+          if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+            if (groupsState[groupId].hasErrors) {
+              sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
+            } else {
+              sendProgress({ type: "group_success", id: groupId });
+            }
+          }
+        }
       }
     } catch (err) {
       log("⚠️ Error creating variants:", err);
@@ -780,11 +771,38 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         variants: converted
       });
       const variantsUpdateData = await variantsUpdateRes.json();
-      const errs = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors;
+      const variantsUpdateError = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors || [];
       
-      if (errs?.length) {
-        log("⚠️ Variant update errors:", errs);
+      if (variantsUpdateError.length) {
+        variantsUpdateError.forEach((err, index) => {
+          sendProgress({
+            type: "variant_processing_error",
+            groupId,
+            productId: existing.id,
+            message: err.message || "Error actualizando variante",
+            variant: variantsToUpdate[index] || null
+          });
+        });
       } else {
+        // log('ImageMap used for updating variants:', { ...imageMap });
+
+        for (const v of variantsToUpdate) {
+          // log('✅ Variante actualizada:', { ...v });
+          sendProgress({
+            type: "variant_processing_success",
+            groupId,
+            productId: existing.id,
+            action: "updated",
+            variant: {
+              sku: v.sku,
+              image: v.image,
+              capacity: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+              color: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+              condition: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+            }
+          });
+        }
+
         updated += converted.length;
       }
     } catch (err) {
@@ -796,12 +814,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 }
 
 async function processGroup(admin, groupId, groupItems) {
-  sendProgress({
-    type: "processing-group",
-    groupId,
-    count: groupItems.length
-  });
-
   const publicationsRes = await adminGraphql(admin, GET_PUBLICATIONS);
   const publicationsData = await publicationsRes.json();
   const publicationsIDs = publicationsData?.data?.publications?.edges
@@ -824,14 +836,19 @@ async function processGroup(admin, groupId, groupItems) {
       const { success, product } = await createShopifyProduct(admin, productObj, groupId);
 
       sendProgress({
-        type: "group-created",
+        type: "product_created",
         groupId,
         result: { success, product }
       });
 
       const synced = await syncExistingProduct(admin, { id: product.id }, productObj, groupId);
 
-      sendProgress({ step: "group-updated", groupId, result: synced });
+      sendProgress({
+        type: "product_synced",
+        groupId,
+        createdVariants: synced.created,
+        updatedVariants: synced.updated
+      });
 
      await adminGraphql(admin, PUBLISH_PRODUCT, {
         id: product.id,
@@ -855,7 +872,12 @@ export async function syncXmlString(admin, xmlString) {
   try {
     resetCancelFlag(); // Reinicia el flag de cancelación al inicio
     log("🔄 Starting syncXmlString ...");
-    const result = await fetch(xmlString);
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 3000); // 30 segundos de timeout inicial
+    
+    const result = await fetch(xmlString, { signal: AbortSignal.timeout(60000) });
+    clearTimeout(id);
+    
     const xml = await result.text();
 
     const rawItems = parseXmlItems(xml);
@@ -866,7 +888,7 @@ export async function syncXmlString(admin, xmlString) {
       totalProducts: rawItems.length,
     });
 
-    const normalized = rawItems.map(normalizeFeedItem);
+    const normalized = rawItems.map(normalizeFeedItem).filter(Boolean);
     const groups = groupByModelKey(normalized);
 
     sendProgress({
@@ -874,47 +896,70 @@ export async function syncXmlString(admin, xmlString) {
       groups
     });
 
+    sendProgress({
+      type: "groups_list",
+      groups: Object.keys(groups)
+    });
+
     const results = {};
+    let processedGroups = 0;
+
     for (const [groupId, groupItems] of Object.entries(groups)) {
       if (wasCancelled()) {
         log("🛑 Sincronización cancelada por el usuario.");
         sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
         break;
       }
+
       try {
-        sendProgress({
-          type: "group-start",
-          groupId
+        sendProgress({  
+          type: "group_start",
+          id: groupId,
+          items: groupItems
         });
+
+        groupsState[groupId] = {
+          totalVariants: 0,
+          processedVariants: 0,
+          hasErrors: false
+        };
 
         results[groupId] = await processGroup(admin, groupId, groupItems);
 
         sendProgress({
-          type: "group-end",
-          groupId,
+          type: "group_end",
+          id: groupId,
           result: results[groupId]
         });
+
+        processedGroups++;
+
+        sendProgress({
+          type: "overall_status",
+          processed: processedGroups,
+          total: Object.keys(groups).length
+        });
+        
       } catch (err) {
         log("❌ Error processing group", groupId, err);
         results[groupId] = { success: false, error: err?.message || String(err) };
 
         sendProgress({
-          type: "group-error",
-          groupId,
+          type: "group_error",
+          id: groupId,
           error: err?.message || String(err)
         });
       }
     }
 
-    sendProgress({
-      type: wasCancelled() ? "sync-cancelled" : "sync-end",
-      results
-    });
+    if (!wasCancelled()) {
+      sendProgress({ type: "sync-end", results });
+    }
     log(wasCancelled() ? "🛑 sync cancelled" : "✅ sync finished");
   } catch (err) {
     log("❌ syncXmlString error:", err);
     sendProgress({ step: "sync-error", error: err?.message || String(err) });
-    throw err;
+    syncXmlString(admin, xmlString); // reintentar
   }
 }
 
