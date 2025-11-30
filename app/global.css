@@ -1,5 +1,6 @@
 /* Importar estilos de Polaris */
 @import '@shopify/polaris/build/esm/styles.css';
+@import "tailwindcss";
 
 /* Estilos globales para toda la aplicación */
 
