@@ -101,16 +101,13 @@ export default function Index() {
   const [variantStatusByGroup, setVariantStatusByGroup] = useState({});
 
   // Función para limpiar todo el estado de importación
-  const resetImportState = async () => {
-    setSyncState((prev) => ({
-      ...prev,
-      isActive: false,
-      status: "cancelled",
-      currentStep: "Importación cancelada por el usuario"
-    }));
-
+  const resetAll = async () => {
     try {
       await fetch("/api/sync-cancel");
+
+      console.log("🔴 Cancelación solicitada al backend");
+      setGroupStatus([]);
+      setVariantStatusByGroup({});
     } catch (e) {
       console.warn("No se pudo notificar la cancelación al backend", e);
     }
@@ -180,6 +177,7 @@ export default function Index() {
     es.addEventListener("sync-start", e => {
       const d = JSON.parse(e.data);
 
+
       setSyncState(prev => ({
         ...prev,
         status: "syncing",
@@ -190,6 +188,7 @@ export default function Index() {
 
     es.addEventListener("groups_list", (e) => {
       const d = JSON.parse(e.data);
+
 
       setGroupStatus(
         d.groups.map(g => ({
@@ -208,6 +207,7 @@ export default function Index() {
 
     es.addEventListener("groups-detected", e => {
       const d = JSON.parse(e.data);
+
 
       setSyncState(prev => ({
         ...prev,
@@ -237,8 +237,21 @@ export default function Index() {
       }));
     });
 
+    es.addEventListener('group_unchanged', e => {
+      const d = JSON.parse(e.data);
+
+
+      setGroupStatus(prev => prev.map(g =>
+        g.id === d.id
+          ? { ...g, status: "unchanged" }
+          : g
+      )
+      );
+    })
+
     es.addEventListener("group_end", e => {
       const d = JSON.parse(e.data);
+
 
       setGroupStatus(prev => {
         return prev.map(g =>
@@ -249,6 +262,7 @@ export default function Index() {
 
     es.addEventListener("group_error", e => {
       const d = JSON.parse(e.data);
+
 
       setGroupStatus(prev =>
         prev.map(g =>
@@ -266,6 +280,7 @@ export default function Index() {
     es.addEventListener("product_created", e => {
       const d = JSON.parse(e.data);
 
+
       setSyncState(prev => ({
         ...prev,
         currentStep: `Producto creado: ${d.product?.title || d.groupId}`,
@@ -278,6 +293,7 @@ export default function Index() {
 
     es.addEventListener("product_create_request", e => {
       const d = JSON.parse(e.data);
+
 
       setSyncState(prev => ({
         ...prev,
@@ -292,6 +308,7 @@ export default function Index() {
     es.addEventListener("product_media_uploaded", e => {
       const d = JSON.parse(e.data);
 
+
       setSyncState(prev => ({
         ...prev,
         currentStep: `Imágenes subidas (${d.count}) para producto ${d.productId}`
@@ -300,6 +317,7 @@ export default function Index() {
 
     es.addEventListener("product_media_added", e => {
       const d = JSON.parse(e.data);
+
 
       setSyncState(prev => ({
         ...prev,
@@ -346,6 +364,7 @@ export default function Index() {
     es.addEventListener("variant_update_detected", e => {
       const d = JSON.parse(e.data);
 
+
       setVariantStatusByGroup(prev => ({
         ...prev,
         [d.groupId]: {
@@ -360,6 +379,7 @@ export default function Index() {
 
     es.addEventListener("variant_processing_start", e => {
       const d = JSON.parse(e.data);
+
 
       setVariantStatusByGroup(prev => ({
         ...prev,
@@ -376,6 +396,7 @@ export default function Index() {
     es.addEventListener("variant_processing_success", e => {
       const d = JSON.parse(e.data);
 
+
       setVariantStatusByGroup(prev => ({
         ...prev,
         [d.groupId]: {
@@ -388,33 +409,21 @@ export default function Index() {
         }
       }));
 
-      console.log("✅ Variante procesada:", { ...d });
-
       setGroupStatus(prev =>
-        prev.map(g => {
-          if (g.id === d.groupId) {
-            console.log({
-              ...g,
-              created: g.created + (d.action === "created" ? 1 : 0),
-              updated: g.updated + (d.action === "updated" ? 1 : 0),
-              skipped: g.skipped + (d.action === "skipped" ? 1 : 0)
-            })
-          }
-
-          return g.id === d.groupId ? {
-            ...g,
-            created: g.created + (d.action === "created" ? 1 : 0),
-            updated: g.updated + (d.action === "updated" ? 1 : 0),
-            skipped: g.skipped + (d.action === "skipped" ? 1 : 0)
-          }
-            : g
+        prev.map(g => g.id === d.groupId ? {
+          ...g,
+          created: g.created + (d.action === "created" ? 1 : 0),
+          updated: g.updated + (d.action === "updated" ? 1 : 0),
+          skipped: g.skipped + (d.action === "skipped" ? 1 : 0)
         }
+          : g
         )
       )
     });
 
     es.addEventListener("variant_processing_error", e => {
       const d = JSON.parse(e.data);
+
 
       setVariantStatusByGroup(prev => ({
         ...prev,
@@ -439,8 +448,20 @@ export default function Index() {
       )
     });
 
+    es.addEventListener("sync-end", () => {
+      setSyncState(prev => ({
+        ...prev,
+        isActive: false,
+        status: "sync-completed",
+        currentStep: "Sincronización completada"
+      }));
+
+      resetAll();
+    });
+
     es.addEventListener("sync-cancelled", e => {
-      const d = JSON.parse(e.data || "{}");
+      const d = JSON.parse(e.data);
+
 
       setSyncState(prev => ({
         ...prev,
@@ -452,8 +473,6 @@ export default function Index() {
 
     return () => es.close();
   }, []);
-
-  useEffect(() => { console.log(variantStatusByGroup); }, [variantStatusByGroup]);
 
   // ✨ NUEVO: useEffect que inicia procesamiento cuando recibimos productos del action
   useEffect(() => {
@@ -542,14 +561,15 @@ export default function Index() {
                         🎨 Obtener colores existentes
                       </s-button>
                     )}
-                    <s-button
-                      variant="secondary"
-                      size="large"
-                      onClick={resetImportState}
-                      disabled={!syncState?.isActive}
-                    >
-                      🛑 Cancelar importación
-                    </s-button>
+                    {syncState?.status === 'syncing' && (
+                      <s-button
+                        variant="secondary"
+                        size="large"
+                        onClick={resetAll}
+                      >
+                        🛑 Cancelar importación
+                      </s-button>
+                    )}
                   </s-stack>
                 </s-stack>
               </fetcher.Form>
@@ -558,7 +578,7 @@ export default function Index() {
         </s-section>
 
         {/* SECCIÓN DE PROGRESO EN TIEMPO REAL */}
-        {syncState?.isActive && (
+        {groupStatus.length > 0 && (
           <s-section>
             <s-stack rowGap="large-100">
               <s-stack rowGap="large-100">
@@ -643,40 +663,22 @@ export default function Index() {
                     </s-stack>
                   </s-box>
                 </s-grid>
-
-                {/* ESTADO ACTUAL */}
-                <s-card>
-                  <div style={{
-                    padding: '16px',
-                    borderLeft: '4px solid #007bff'
-                  }}>
-                    <s-text variant="body-sm" fontWeight="semibold">
-                      📍 Estado Actual:
-                    </s-text>
-                    <s-text variant="body-sm" tone="subdued">
-                      {syncState?.currentStep || 'Preparando...'}
-                    </s-text>
-                  </div>
-                </s-card>
               </s-stack>
             </s-stack>
           </s-section>
         )}
 
-        {/* MENSAJE DE ÉXITO INICIAL */}
-        {actionData?.success && !syncState?.isActive && (
+        {/* MENSAJE DE ÉXITO FINAL */}
+        {syncState?.status === 'sync-completed' && (
           <s-section>
             <s-card>
               <s-banner tone="success">
                 <s-stack gap="tight">
                   <s-text variant="body-md" fontWeight="semibold">
-                    ✅ XML parseado exitosamente
+                    ✅ Productos importados exitosamente
                   </s-text>
                   <s-text variant="body-sm">
-                    📦 {actionData.totalProducts} productos encontrados
-                  </s-text>
-                  <s-text variant="body-sm" tone="subdued">
-                    ⚡ Iniciando procesamiento...
+                    📦 {groupStatusTotals.totalProcessedProducts} productos importados
                   </s-text>
                 </s-stack>
               </s-banner>
@@ -739,9 +741,9 @@ export default function Index() {
                                 <s-icon type="clock" tone="neutral" />
                               ) : g.status === "success" ? (
                                 <s-icon type="check-circle-filled" tone="success" />
-                              ) : (
-                                <s-icon type="alert-circle" tone="critical" />
-                              )}
+                              ) : g.status === "unchanged" ? (
+                                <s-icon type="minus-circle" tone="subdued" />
+                              ) : <s-icon type="alert-circle" tone="critical" />}
 
                               <s-text variant="body-md" fontWeight="semibold" className="capitalize">
                                 <span className='capitalize'>{g.name || g.id}</span>
