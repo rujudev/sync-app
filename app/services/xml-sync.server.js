@@ -218,7 +218,7 @@ async function adminGraphql(admin, query, variables = {}) {
   // admin.graphql should return parsed JSON-like object (data / errors)
   try {
     return await withRetry(() => admin.graphql(query, { variables }));
-  } catch(e) {
+  } catch (e) {
     if (e.response) {
       const text = await e.response.text();
       console.error("❌ adminGraphql error response text:", text);
@@ -243,7 +243,7 @@ async function findExistingProduct(admin, group) {
   if (handle) queries.push(`handle:${handle}`);
   if (sku) queries.push(`sku:${sku}`);
   if (title) queries.push(`title:${title}`);
-  
+
   try {
     const res = await adminGraphql(admin, PRODUCT_SEARCH, { query: `handle:${handle}` });
     const searchResults = await res.json();
@@ -270,11 +270,11 @@ function buildShopifyProductObject(group) {
   }
 
   const title = base.modelTitle;
-  
-  const capacities = uniqStrings(group.map(v => v.capacity ));
+
+  const capacities = uniqStrings(group.map(v => v.capacity));
   const colors = uniqStrings(group.map(v => v.color));
   const conditions = uniqStrings(group.map(v => v.condition));
-  
+
   const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'Apple';
 
   const tags = [
@@ -377,7 +377,7 @@ function variantNeedsUpdate(existingVar, newVar) {
 async function createShopifyProduct(admin, productObj, groupId = null) {
   // build input, include handle & tag for future searches
   const input = { ...productObj };
-  
+
   if (groupId) {
     const handle = String(groupId).toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 80);
     input.handle = handle;
@@ -398,15 +398,17 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
 
     input.productOptions.forEach((opt) => log(" - Option:", opt.name, "Values:", opt.values.map(v => v.name).join(", ")));
 
-    const response = await adminGraphql(admin, PRODUCT_CREATE, { product: {
-      title: input.title,
-      vendor: input.vendor,
-      descriptionHtml: input.descriptionHtml,
-      handle: input.handle,
-      tags: input.tags,
-      productOptions: input.productOptions,
-    }});
-    
+    const response = await adminGraphql(admin, PRODUCT_CREATE, {
+      product: {
+        title: input.title,
+        vendor: input.vendor,
+        descriptionHtml: input.descriptionHtml,
+        handle: input.handle,
+        tags: input.tags,
+        productOptions: input.productOptions,
+      }
+    });
+
     const productResult = await response.json();
     const productData = productResult?.data?.productCreate?.product;
 
@@ -424,7 +426,7 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
 // ====================== Find variant helper ======================
 function findVariant(existingVariants, newVariant) {
   // Busca variante por sku, barcode o combinación exacta de opciones
-    return (
+  return (
     existingVariants.find(ev =>
       ev.sku === newVariant.sku ||
       ev.barcode === newVariant.barcode ||
@@ -471,7 +473,7 @@ async function getProductMediaWithRetry(admin, productId, maxRetries = 10, delay
     const data = await res.json();
     const mediaNodes = data?.data?.product?.media?.nodes || []
     const urls = mediaNodes.map(m => m.preview?.image?.url).filter(Boolean);
-    
+
     if (urls.length > 0) {
       return mediaNodes;
     }
@@ -531,7 +533,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         originalSource: img.originalSrc,
         alt: `${productObj.title} - ${i + 1}`
       }));
-      
+
       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
 
       sendProgress({
@@ -540,7 +542,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         groupId,
         count: media.length
       });
-      
+
       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
 
       sendProgress({
@@ -588,7 +590,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   })
 
   groupsState[groupId].totalVariants += productObj.variants.length;
-  
+
   // iterate variants
   for (const variant of productObj.variants) {
     sendProgress({
@@ -689,18 +691,18 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       count: variantsToCreate.length,
       groupId
     });
-    
-    const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
+
+    const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
 
     try {
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
         productId: existing.id,
         variants: converted
       });
-  
+
       const variantsData = await variantsCreateRes.json();
-      const variantsCreateError = variantsData?.data?.productVariantsBulkCreate?.userErrors || [];  
-      
+      const variantsCreateError = variantsData?.data?.productVariantsBulkCreate?.userErrors || [];
+
       if (variantsCreateError.length) {
         variantsCreateError.forEach((err, index) => {
           sendProgress({
@@ -736,13 +738,25 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
           });
 
           groupsState[groupId].processedVariants++;
-  
+
           // Si todas las variantes han finalizado
           if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
             if (groupsState[groupId].hasErrors) {
               sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
             } else {
-              sendProgress({ type: "group_success", id: groupId });
+              const noChanges = created === 0 && updated === 0;
+
+              if (noChanges) {
+                sendProgress({
+                  type: "group_unchanged",
+                  id: groupId
+                });
+              } else {
+                sendProgress({
+                  type: "group_success",
+                  id: groupId
+                });
+              }
             }
           }
         }
@@ -760,7 +774,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       groupId
     });
 
-    const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap))}) );
+    const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
 
     // log(fr
 
@@ -772,7 +786,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       });
       const variantsUpdateData = await variantsUpdateRes.json();
       const variantsUpdateError = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors || [];
-      
+
       if (variantsUpdateError.length) {
         variantsUpdateError.forEach((err, index) => {
           sendProgress({
@@ -810,19 +824,19 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
-  return { created, updated };
+  return { created, updated, unchanged: created === 0 && updated === 0 };
 }
 
 async function processGroup(admin, groupId, groupItems) {
   const publicationsRes = await adminGraphql(admin, GET_PUBLICATIONS);
   const publicationsData = await publicationsRes.json();
   const publicationsIDs = publicationsData?.data?.publications?.edges
-    .filter(pub => 
+    .filter(pub =>
       pub.node.name === 'Tienda Online' ||
       pub.node.name === 'Online Store' ||
-      pub.node.name === 'Shop' || 
+      pub.node.name === 'Shop' ||
       pub.node.name === 'Shopify GraphiQL App'
-    ).map(pub => ({ publicationId: pub.node.id}) ) || [];
+    ).map(pub => ({ publicationId: pub.node.id })) || [];
 
   let productObj = buildShopifyProductObject(groupItems);
 
@@ -831,7 +845,7 @@ async function processGroup(admin, groupId, groupItems) {
 
   if (!existing) {
     log("🟢 Creating product:", productObj.title);
-    
+
     try {
       const { success, product } = await createShopifyProduct(admin, productObj, groupId);
 
@@ -850,11 +864,11 @@ async function processGroup(admin, groupId, groupItems) {
         updatedVariants: synced.updated
       });
 
-     await adminGraphql(admin, PUBLISH_PRODUCT, {
+      await adminGraphql(admin, PUBLISH_PRODUCT, {
         id: product.id,
         input: publicationsIDs
       });
-  
+
       return { success, product }
     } catch (err) {
       log("⚠️ Error creating product en processGroup:", err);
@@ -863,21 +877,22 @@ async function processGroup(admin, groupId, groupItems) {
       }
     }
   }
-  
+
   return { success: false, product: null };
 }
 
 export async function syncXmlString(admin, xmlString) {
-  
+
+  console.log('hemos entrado en syncXmlString');
   try {
     resetCancelFlag(); // Reinicia el flag de cancelación al inicio
     log("🔄 Starting syncXmlString ...");
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), 3000); // 30 segundos de timeout inicial
-    
+
     const result = await fetch(xmlString, { signal: AbortSignal.timeout(60000) });
     clearTimeout(id);
-    
+
     const xml = await result.text();
 
     const rawItems = parseXmlItems(xml);
@@ -905,14 +920,10 @@ export async function syncXmlString(admin, xmlString) {
     let processedGroups = 0;
 
     for (const [groupId, groupItems] of Object.entries(groups)) {
-      if (wasCancelled()) {
-        log("🛑 Sincronización cancelada por el usuario.");
-        sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
-        break;
-      }
+      if (wasCancelled()) break;
 
       try {
-        sendProgress({  
+        sendProgress({
           type: "group_start",
           id: groupId,
           items: groupItems
@@ -939,7 +950,7 @@ export async function syncXmlString(admin, xmlString) {
           processed: processedGroups,
           total: Object.keys(groups).length
         });
-        
+
       } catch (err) {
         log("❌ Error processing group", groupId, err);
         results[groupId] = { success: false, error: err?.message || String(err) };
@@ -952,14 +963,15 @@ export async function syncXmlString(admin, xmlString) {
       }
     }
 
-    if (!wasCancelled()) {
-      sendProgress({ type: "sync-end", results });
-    }
+    !wasCancelled()
+      ? sendProgress({ type: "sync-end", results })
+      : sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
+
     log(wasCancelled() ? "🛑 sync cancelled" : "✅ sync finished");
   } catch (err) {
     log("❌ syncXmlString error:", err);
     sendProgress({ step: "sync-error", error: err?.message || String(err) });
-    syncXmlString(admin, xmlString); // reintentar
+    return;
   }
 }
 
