@@ -1,5 +1,6 @@
 import { ProgressBar } from '@shopify/polaris';
 import '@shopify/polaris/build/esm/styles.css';
+import jsPDF from 'jspdf';
 import { useEffect, useMemo, useState } from 'react';
 import { useFetcher } from "react-router";
 import Pagination from '../components/Pagination.jsx';
@@ -99,6 +100,7 @@ export default function Index() {
 
   const [groupStatus, setGroupStatus] = useState([]);
   const [variantStatusByGroup, setVariantStatusByGroup] = useState({});
+  const [productsWithSmallImages, setProductsWithSmallImages] = useState([]);
 
   // Función para limpiar todo el estado de importación
   const resetAll = async () => {
@@ -112,6 +114,116 @@ export default function Index() {
       console.warn("No se pudo notificar la cancelación al backend", e);
     }
   };
+
+  const [smallImagesListPage, setSmallImagesListPage] = useState(1);
+  const [loadingSmallImagesPdf, setLoadingSmallImagesPdf] = useState(false);
+  const smallPageSize = 10;
+
+  const smallTotalPages = useMemo(
+    () => Math.ceil(productsWithSmallImages.length / smallPageSize),
+    [productsWithSmallImages, smallPageSize]
+  );
+
+  const smallPaginated = useMemo(() => {
+    const start = (smallImagesListPage - 1) * smallPageSize;
+    const end = start + smallPageSize;
+    return productsWithSmallImages.slice(start, end);
+  }, [productsWithSmallImages, smallImagesListPage, smallPageSize]);
+
+
+  async function loadImageAsDataURL(url) {
+    try {
+      // Usar el proxy del servidor para evitar CORS
+      const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
+      const response = await fetch(proxyUrl);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (!data.success || !data.dataUrl) {
+        throw new Error('Invalid response from proxy');
+      }
+
+      return data.dataUrl;
+    } catch (err) {
+      console.warn('No se pudo cargar imagen:', url, err.message);
+      return null;
+    }
+  }
+
+  async function handleExportSmallImagesPdf() {
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const margin = 40;
+    const lineHeight = 16;
+    const maxWidth = 515;
+    const thumbSize = 60; // tamaño thumbnail
+    let y = margin;
+
+    // Título
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text('Productos con imágenes pequeñas (<600x600)', margin, y);
+    y += 24;
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(11);
+
+    setLoadingSmallImagesPdf(true);
+
+    for (const item of productsWithSmallImages) {
+      // Salto de página si no hay espacio
+      if (y > 750) {
+        doc.addPage();
+        y = margin;
+      }
+
+      const startY = y;
+
+      // Cargar y añadir thumbnail
+      if (item.image) {
+        try {
+          const img = await loadImageAsDataURL(item.image);
+          doc.addImage(img, 'JPEG', margin, y, thumbSize, thumbSize);
+        } catch (err) {
+          console.warn('No se pudo cargar imagen:', item.image, err);
+        }
+      }
+
+      // Texto al lado del thumbnail
+      const textX = margin + thumbSize + 12;
+      const textWidth = maxWidth - thumbSize - 12;
+
+      const rows = [
+        `Producto: ${item.productName || ''}`,
+        `Id: ${item.sku || ''}`,
+        `${item.capacity || ''} • ${item.color || ''} • ${item.condition || ''}`,
+        `Dimensiones: ${item?.dimensions ? `${item.dimensions.width}x${item.dimensions.height}px` : 'N/D'}`,
+        `URL: ${item.image || ''}`
+      ];
+
+      let textY = y + lineHeight;
+      rows.forEach((row) => {
+        const split = doc.splitTextToSize(row, textWidth);
+        doc.text(split, textX, textY);
+        textY += lineHeight * (Array.isArray(split) ? split.length : 1);
+      });
+
+      // Avanzar Y al máximo entre thumbnail y texto
+      y = Math.max(startY + thumbSize, textY) + 10;
+
+      // Separador
+      doc.setDrawColor(200);
+      doc.line(margin, y, margin + maxWidth, y);
+      y += 14;
+    }
+
+    setLoadingSmallImagesPdf(false);
+
+    doc.save('imagenes-pequenas.pdf');
+  }
 
   const actionData = fetcher.data;
   const isLoading = fetcher.state === "submitting";
@@ -393,6 +505,52 @@ export default function Index() {
       }));
     });
 
+    es.addEventListener("variant_image_too_small", e => {
+      const d = JSON.parse(e.data);
+
+      console.log({ ...d })
+
+      setProductsWithSmallImages(prev => {
+        // Evitar duplicados por groupId
+        const exists = prev.find(item => item.groupId === d.groupId && item.sku === d.variant.sku);
+        if (exists) return prev;
+
+        console.log([...prev, {
+          groupId: d.groupId,
+          productName: d.groupId, // o puedes enviar el título desde el servidor
+          sku: d.variant.sku,
+          image: d.variant.image,
+          dimensions: d.variant.imageDimensions,
+          capacity: d.variant.capacity,
+          color: d.variant.color,
+          condition: d.variant.condition
+        }])
+
+        return [...prev, {
+          groupId: d.groupId,
+          productName: d.groupId, // o puedes enviar el título desde el servidor
+          sku: d.variant.sku,
+          image: d.variant.image,
+          dimensions: d.variant.imageDimensions,
+          capacity: d.variant.capacity,
+          color: d.variant.color,
+          condition: d.variant.condition
+        }];
+      });
+
+      setVariantStatusByGroup(prev => ({
+        ...prev,
+        [d.groupId]: {
+          ...prev[d.groupId],
+          [d.variant.sku]: {
+            status: "error",
+            message: "La imagen es demasiado pequeña",
+            variant: d.variant
+          }
+        }
+      }));
+    })
+
     es.addEventListener("variant_processing_success", e => {
       const d = JSON.parse(e.data);
 
@@ -665,6 +823,77 @@ export default function Index() {
                 </s-grid>
               </s-stack>
             </s-stack>
+          </s-section>
+        )}
+
+        {/* RESUMEN DE PRODUCTOS CON IMÁGENES PEQUEÑAS */}
+        {productsWithSmallImages.length > 0 && (
+          <s-section>
+            <s-card>
+              <s-banner tone="warning">
+                <s-stack gap="base">
+                  <s-stack direction="inline" alignment="space-between">
+                    <s-text variant="heading-sm" fontWeight="semibold">
+                      ⚠️ Productos con imágenes pequeñas ({productsWithSmallImages.length})
+                    </s-text>
+                  </s-stack>
+
+                  <s-button
+                    variant="secondary"
+                    size="small"
+                    onClick={handleExportSmallImagesPdf}
+                    loading={loadingSmallImagesPdf}
+                    disabled={loadingSmallImagesPdf}
+                  >
+                    📄 Exportar PDF
+                  </s-button>
+
+                  <s-text variant="body-sm" tone="subdued">
+                    Los siguientes productos tienen imágenes menores a 600x600 píxeles:
+                  </s-text>
+
+                  <s-stack gap="small">
+                    {smallPaginated.map((item, idx) => (
+                      <s-box key={`${item.sku}-${idx}`} padding="base" background="subdued" borderRadius="base">
+                        <s-stack direction="inline" alignment="start" gap="base">
+                          {item.image && (
+                            <s-box blockSize="60px" inlineSize="60px" style={{ flex: '0 0 60px' }}>
+                              <s-image src={item.image} alt={item.productName} inlineSize="fill" />
+                            </s-box>
+                          )}
+
+                          <s-stack gap="tight" style={{ flex: 1 }}>
+                            <s-text variant="body-md" fontWeight="semibold">
+                              {item.productName}
+                            </s-text>
+                            <s-text variant="body-sm" tone="subdued">
+                              {item.capacity} • {item.color} • {item.condition}
+                            </s-text>
+                            <s-text variant="caption" tone="subdued">
+                              SKU: {item.sku}
+                            </s-text>
+                            {item.dimensions && (
+                              <s-badge tone="warning" size="small">
+                                📏 {item.dimensions.width}x{item.dimensions.height}px
+                              </s-badge>
+                            )}
+                          </s-stack>
+                        </s-stack>
+                      </s-box>
+                    ))}
+
+                    {/* Paginación con el mismo componente */}
+                    <Pagination
+                      page={smallImagesListPage}
+                      totalPages={smallTotalPages}
+                      totalItems={productsWithSmallImages.length}
+                      pageSize={smallPageSize}
+                      onChange={newPage => setSmallImagesListPage(newPage)}
+                    />
+                  </s-stack>
+                </s-stack>
+              </s-banner>
+            </s-card>
           </s-section>
         )}
 

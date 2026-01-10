@@ -606,6 +606,26 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       }
     });
 
+    if (variant.image) {
+      const dimensions = await getImageDimensions(variant.image);
+
+      if (isImageSmall(dimensions)) {
+        sendProgress({
+          type: "variant_image_too_small",
+          groupId,
+          productId: existing.id,
+          variant: {
+            sku: variant.sku,
+            image: variant.image,
+            imageDimensions: dimensions,
+            capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+            color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+            condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+          }
+        })
+      }
+    }
+
     variant.mediaId = imageMap[variant.image] || null;
     const match = findVariant(productVariants, variant);
 
@@ -825,6 +845,28 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   }
 
   return { created, updated, unchanged: created === 0 && updated === 0 };
+}
+
+async function getImageDimensions(imageUrl) {
+  try {
+    const res = await fetch(imageUrl);
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const { imageSize } = await import('image-size');
+    const dimensions = imageSize(buffer);
+
+    return dimensions;
+  } catch (err) {
+    log("⚠️ Error getting image dimensions:", err);
+    return null;
+  }
+}
+
+function isImageSmall(dimensions) {
+  if (!dimensions) return false;
+  const { width, height } = dimensions;
+  return width < 600 || height < 600;
 }
 
 async function processGroup(admin, groupId, groupItems) {
