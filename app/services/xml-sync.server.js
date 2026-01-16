@@ -214,7 +214,7 @@ async function withRetry(fn, retries = CONFIG.RETRIES, baseDelay = CONFIG.RETRY_
   }
 }
 
-async function adminGraphql(admin, query, variables = {}) {
+export async function adminGraphql(admin, query, variables = {}) {
   // admin.graphql should return parsed JSON-like object (data / errors)
   try {
     return await withRetry(() => admin.graphql(query, { variables }));

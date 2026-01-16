@@ -224,3 +224,113 @@ export const PUBLISH_PRODUCT = `
     }
   }
 `;
+
+export const GET_COLLECTION_PRODUCTS = `
+  query Products($cursor: String, $collectionId: ID!, $limit: Int!) {
+    collection(id: $collectionId) {
+      products(first: $limit, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        edges {
+          node {
+            id
+          }
+        }
+      }
+    }
+  }
+`
+
+export const REMOVE_PRODUCTS = `
+  mutation RemoveProducts($collectionId: ID!, $productIds: [ID!]!) {
+    collectionRemoveProducts(collectionId: $collectionId, productIds: $productIds) { 
+      userErrors {
+        message
+      }
+    }
+  }
+`
+
+export const ADD_PRODUCTS_TO_COLLECTION = `
+  mutation AddProducts($collectionId: ID!, $productIds: [ID!]!) {
+    collectionAddProducts(collectionId: $collectionId, productIds: $productIds) {
+      userErrors {
+        message
+      }
+    }
+  }
+`
+
+/** ============================== Ordenes pagadas =================================== */
+
+export const PAID_ORDERS_QUERY = `
+  query Orders($cursor: String, $limit: Int = 50) {
+    orders(first: $limit, after: $cursor, query: "financial_status:paid") {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        cursor
+        node { 
+          id
+          createdAt
+          lineItems(first: 250) {
+            edges {
+              node { 
+                quantity
+                product {
+                  id
+                  title
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
+export const GET_COLLECTION_BY_HANDLE = `
+  query GetCollectionByHandle($handle: String!) {
+    collectionByHandle(handle: $handle) {
+      id
+      title
+      handle
+      sortOrder
+      ruleSet {
+        appliedDisjunctively
+      }
+    }
+  }
+`;
+
+export const CREATE_COLLECTION = `
+  mutation CreateCollection($title: String!, $handle: String!) {
+    collectionCreate(input: {
+      title: $title
+      handle: $handle
+    }) {
+      collection {
+        id
+        title
+        handle
+        sortOrder
+        ruleSet {
+          appliedDisjunctively
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`
+
+export const CLEAR_COLLECTION = `
+  query
+`
