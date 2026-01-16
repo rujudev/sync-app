@@ -1,5 +1,5 @@
-import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { AppProvider as PolarisProvider } from '@shopify/polaris';
+import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
@@ -19,6 +19,7 @@ export default function App() {
       <PolarisProvider>
         <s-app-nav>
           <s-link href="/app">Importar productos</s-link>
+          <s-link href="/app/best-sellers">Actualizar Top Ventas</s-link>
         </s-app-nav>
         <Outlet />
       </PolarisProvider>
