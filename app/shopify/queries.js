@@ -244,8 +244,8 @@ export const GET_COLLECTION_PRODUCTS = `
 `
 
 export const REMOVE_PRODUCTS = `
-  mutation RemoveProducts($collectionId: ID!, $productIds: [ID!]!) {
-    collectionRemoveProducts(collectionId: $collectionId, productIds: $productIds) { 
+  mutation RemoveProducts($id: ID!, $productIds: [ID!]!) {
+    collectionRemoveProducts(id: $id, productIds: $productIds) { 
       userErrors {
         message
       }
@@ -254,8 +254,8 @@ export const REMOVE_PRODUCTS = `
 `
 
 export const ADD_PRODUCTS_TO_COLLECTION = `
-  mutation AddProducts($collectionId: ID!, $productIds: [ID!]!) {
-    collectionAddProducts(collectionId: $collectionId, productIds: $productIds) {
+  mutation AddProducts($id: ID!, $productIds: [ID!]!) {
+    collectionAddProducts(id: $id, productIds: $productIds) {
       userErrors {
         message
       }
@@ -300,10 +300,6 @@ export const GET_COLLECTION_BY_HANDLE = `
       id
       title
       handle
-      sortOrder
-      ruleSet {
-        appliedDisjunctively
-      }
     }
   }
 `;
@@ -318,10 +314,6 @@ export const CREATE_COLLECTION = `
         id
         title
         handle
-        sortOrder
-        ruleSet {
-          appliedDisjunctively
-        }
       }
       userErrors {
         field
@@ -329,8 +321,4 @@ export const CREATE_COLLECTION = `
       }
     }
   }
-`
-
-export const CLEAR_COLLECTION = `
-  query
 `

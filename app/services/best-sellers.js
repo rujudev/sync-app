@@ -1,4 +1,3 @@
-import { adminGraphql } from "../services/xml-sync.server";
 import { ADD_PRODUCTS_TO_COLLECTION, CREATE_COLLECTION, GET_COLLECTION_BY_HANDLE, GET_COLLECTION_PRODUCTS, GET_PUBLICATIONS, PAID_ORDERS_QUERY, PUBLISH_PRODUCT, REMOVE_PRODUCTS } from "../shopify/queries";
 
 const LIMIT = "50";
@@ -63,7 +62,7 @@ const calculateTopSales = (orders) => {
 }
 
 const getOrCreateCollection = async (admin) => {
-    const collectionResult = await adminGraphql(admin, GET_COLLECTION_BY_HANDLE, { handle: 'top-ventas' });
+    const collectionResult = await admin.graphql(GET_COLLECTION_BY_HANDLE, { variables: { handle: 'top-ventas' } });
     const { data: collection } = await collectionResult.json();
 
     if (collection.collectionByHandle) {
@@ -71,9 +70,11 @@ const getOrCreateCollection = async (admin) => {
         return collection.collectionByHandle.id;
     }
 
-    const createCollectionResult = await adminGraphql(admin, CREATE_COLLECTION, {
-        title: 'Top Ventas',
-        handle: 'top-ventas'
+    const createCollectionResult = await admin.graphql(CREATE_COLLECTION, {
+        variables: {
+            title: 'Top Ventas',
+            handle: 'top-ventas'
+        }
     });
 
     const { data: createdCollection } = await createCollectionResult.json();
@@ -87,15 +88,17 @@ const getOrCreateCollection = async (admin) => {
     const collectionId = createdCollection.collectionCreate.collection.id;
 
     // Publicar la colección recién creada
-    const publicationsResult = await adminGraphql(admin, GET_PUBLICATIONS);
+    const publicationsResult = await admin.graphql(GET_PUBLICATIONS);
     const { data: publicationsData } = await publicationsResult.json();
     const publicationsIDs = publicationsData.publications.edges.map(({ node }) => ({
         publicationId: node.id
     }));
 
-    await adminGraphql(admin, PUBLISH_PRODUCT, {
-        id: collectionId,
-        input: publicationsIDs
+    await admin.graphql(PUBLISH_PRODUCT, {
+        variables: {
+            id: collectionId,
+            input: publicationsIDs
+        }
     });
 
     return collectionId;
@@ -106,7 +109,7 @@ const clearCollection = async (admin, collectionId) => {
     let cursor = null;
 
     while (hasNextPage) {
-        const productsResult = await adminGraphql(admin, GET_COLLECTION_PRODUCTS, { cursor, collectionId, limit: 50 });
+        const productsResult = await admin.graphql(GET_COLLECTION_PRODUCTS, { variables: { cursor, collectionId, limit: 50 } });
         const { data } = await productsResult.json();
 
         const products = data.collection.products;
@@ -117,9 +120,11 @@ const clearCollection = async (admin, collectionId) => {
 
         if (productIds.length === 0) break;
 
-        await adminGraphql(admin, REMOVE_PRODUCTS, {
-            collectionId,
-            productIds
+        await admin.graphql(REMOVE_PRODUCTS, {
+            variables: {
+                id: collectionId,
+                productIds
+            }
         });
     }
 }
@@ -132,9 +137,11 @@ const addProductsToCollection = async (admin, collectionId, productIds) => {
 
     console.log(`✅ Añadiendo ${productIds.length} productos a la colección...`);
 
-    const result = await adminGraphql(admin, ADD_PRODUCTS_TO_COLLECTION, {
-        collectionId,
-        productIds
+    const result = await admin.graphql(ADD_PRODUCTS_TO_COLLECTION, {
+        variables: {
+            id: collectionId,
+            productIds
+        }
     });
 
     const { data } = await result.json();
