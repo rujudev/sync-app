@@ -170,50 +170,30 @@ export const VARIANTS_UPDATE = `
 `;
 
 export const GET_PRODUCT_VARIANTS = `
-  query ProductVariantsList($query: String!, $first: Int!, $after: String) {,
-    productVariants(first: $first, after: $after, query: $query) {,
-      nodes {,
-        id,
-        sku,
-        barcode,
-        price,
-        selectedOptions {,
-          name,
-          value,
-        },
-        image {,
-          url,
-        },
-      },
-      pageInfo {,
-        hasNextPage,
-        endCursor,
-      },
-    },
+  query GetProductVariants($id: ID!, $first: Int!, $after: String) {
+    product(id: $id) {
+      variants(first: $first, after: $after) {
+        nodes {
+          id
+          sku
+          barcode
+          price
+          selectedOptions {
+            name
+            value
+          }
+          image {
+            url
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
   }
 `;
-
-
-// export const GET_PRODUCT_VARIANTS = `
-//     query ProductVariantsList($query: String!) {
-//         productVariants(first: 10, query: $query) {
-//             nodes {
-//                 id
-//                 title
-//                 barcode
-//                 price
-//                 selectedOptions {
-//                     name
-//                     value
-//                 }
-//             }
-//             pageInfo {
-//                 startCursor
-//                 endCursor
-//             }
-//         }
-//     }
-// `;
 
 export const GET_PUBLICATIONS = `
   query GetPublications {

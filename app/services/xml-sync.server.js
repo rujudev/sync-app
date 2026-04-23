@@ -362,7 +362,7 @@ function buildShopifyProductObject(group) {
   const variants = group.map((v) => {
     const variant = {
       sku: v.sku,
-      barcode: String(v.gtin) || null,
+      barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
       price: v.price != null
         ? (Number(v.price) + margin).toFixed(2)
         : "0.00",
@@ -384,7 +384,7 @@ function buildShopifyProductObject(group) {
     title,
     tags,
     vendor: "Cosladafon",
-    descriptionHtml: base.description || "",
+    descriptionHtml: buildDescriptionHtml(base.description, conditions, so),
     productOptions: [
       { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
       { name: "Color", values: colors.map(c => ({ name: c })) },
@@ -396,8 +396,12 @@ function buildShopifyProductObject(group) {
 }
 
 function convertVariantForShopify(newVar, imageMap) {
+  const barcode = isUsableIdentifier(newVar?.barcode)
+    ? String(newVar.barcode).trim()
+    : null;
+
   return {
-    barcode: String(newVar.barcode),
+    barcode,
     price: newVar.price,
     inventoryPolicy: "CONTINUE",
     optionValues: (newVar.optionValues || []).map(ov => ({
@@ -417,9 +421,10 @@ const REFURBISHED_LEGAL_NOTICE_HTML = `
 <p>Canon digital: 3,25€ (incluido en el precio)</p>
 `;
 
-function buildDescriptionHtml(baseDescription = "", conditions = []) {
+function buildDescriptionHtml(baseDescription = "", conditions = [], os = "") {
+  const isAndroid = String(os || "").toLowerCase() === "android";
   const hasRefurbished = conditions.some(c => String(c).toLowerCase() === "refurbished");
-  if (!hasRefurbished) return baseDescription || "";
+  if (!isAndroid || !hasRefurbished) return baseDescription || "";
 
   const cleanBase = baseDescription || "";
   return cleanBase
@@ -446,6 +451,41 @@ function normalizeOptions(arr = []) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function isUsableIdentifier(value) {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  const invalid = ["null", "undefined", "n/a", "na", "-"];
+  return !invalid.includes(v.toLowerCase());
+}
+
+function normalizeString(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function buildOptionsKeyFromSelectedOptions(selectedOptions = []) {
+  return selectedOptions
+    .map((opt) => ({
+      name: normalizeString(opt?.name),
+      value: normalizeString(opt?.value)
+    }))
+    .filter((x) => x.name && x.value)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((x) => `${x.name}:${x.value}`)
+    .join("|");
+}
+
+function buildOptionsKeyFromOptionValues(optionValues = []) {
+  return optionValues
+    .map((opt) => ({
+      name: normalizeString(opt?.optionName),
+      value: normalizeString(opt?.name)
+    }))
+    .filter((x) => x.name && x.value)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((x) => `${x.name}:${x.value}`)
+    .join("|");
+}
+
 // ====================== Create Product (with handle & tags & media) ======================
 
 // ===================================================
@@ -456,7 +496,6 @@ function variantNeedsUpdate(existingVar, newVar) {
   const norm = s => String(s || "").trim().toLowerCase();
 
   if (Number(existingVar.price) !== Number(newVar.price)) return true;
-  if (norm(existingVar.sku) !== norm(newVar.sku)) return true;
   if (norm(existingVar.barcode) !== norm(newVar.barcode)) return true;
 
   if ((existingVar.currentMediaId || null) !== (newVar.mediaId || null)) {
@@ -518,21 +557,29 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
 
 // ====================== Find variant helper ======================
 function findVariant(existingVariants, newVariant) {
-  // Busca variante por sku, barcode o combinación exacta de opciones
-  return (
-    existingVariants.find(ev =>
-      ev.sku === newVariant.sku ||
-      ev.barcode === newVariant.barcode ||
-      (
-        Array.isArray(ev.selectedOptions) && Array.isArray(newVariant.optionValues) &&
-        ev.selectedOptions.length === newVariant.optionValues.length &&
-        ev.selectedOptions.every((opt, idx) => {
-          const newOpt = newVariant.optionValues[idx];
-          return opt.name === newOpt.optionName && opt.value === newOpt.name;
-        })
-      )
-    )
-  ) ?? null;
+  const newSku = normalizeString(newVariant?.sku);
+  const newBarcode = normalizeString(newVariant?.barcode);
+  const newOptionsKey = buildOptionsKeyFromOptionValues(newVariant?.optionValues || []);
+
+  if (isUsableIdentifier(newSku)) {
+    const bySku = existingVariants.find((ev) => normalizeString(ev?.sku) === newSku);
+    if (bySku) return bySku;
+  }
+
+  if (isUsableIdentifier(newBarcode)) {
+    const byBarcode = existingVariants.find((ev) => normalizeString(ev?.barcode) === newBarcode);
+    if (byBarcode) return byBarcode;
+  }
+
+  if (newOptionsKey) {
+    const byOptions = existingVariants.find((ev) => {
+      const existingKey = buildOptionsKeyFromSelectedOptions(ev?.selectedOptions || []);
+      return existingKey && existingKey === newOptionsKey;
+    });
+    if (byOptions) return byOptions;
+  }
+
+  return null;
 }
 
 function extractBaseName(url) {
@@ -580,29 +627,42 @@ async function getProductMediaWithRetry(admin, productId, maxRetries = 10, delay
 // DETECTAR VARIANTES DUPLICADAS
 // ===================================================
 function isDuplicateVariant(existing, variant) {
-  const keys = ["capacidad", "color", "condición"];
+  const incomingKey = buildOptionsKeyFromOptionValues(variant?.optionValues || []);
+  if (!incomingKey) return false;
 
-  // Convierte optionValues → objeto plano {capacidad: '256gb', color: 'gris espacial', ...}
-  const normalizeOptions = variant => {
-    const obj = {};
-
-    for (const opt of variant.optionValues || []) {
-      const optionKey = (opt.optionName || "").toLowerCase().trim();
-      const optionValue = (opt.name || "").toLowerCase().trim();
-      obj[optionKey] = optionValue;
-    }
-
-    return obj;
-  };
-
-  const newObj = normalizeOptions(variant);
-
-  return existing.some(ev => {
-    const existingObj = normalizeOptions(ev);
-
-    // comparar solo los keys relevantes
-    return keys.every(key => existingObj[key] === newObj[key]);
+  return existing.some((ev) => {
+    const existingKey = ev?.selectedOptions
+      ? buildOptionsKeyFromSelectedOptions(ev.selectedOptions)
+      : buildOptionsKeyFromOptionValues(ev?.optionValues || []);
+    return existingKey === incomingKey;
   });
+}
+
+async function getAllProductVariants(admin, productId) {
+  const all = [];
+  let after = null;
+  const first = 100;
+
+  while (true) {
+    const res = await adminGraphql(admin, GET_PRODUCT_VARIANTS, {
+      id: productId,
+      first,
+      after: after || undefined
+    });
+
+    const data = await res.json();
+    const connection = data?.data?.product?.variants;
+    const nodes = connection?.nodes || [];
+    const pageInfo = connection?.pageInfo || {};
+
+    all.push(...nodes);
+
+    if (!pageInfo.hasNextPage) break;
+    after = pageInfo.endCursor;
+    if (!after) break;
+  }
+
+  return all;
 }
 
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
@@ -661,11 +721,12 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   const variantsToUpdate = [];
   const variantsToCreate = [];
 
-  const productVariantsRes = await adminGraphql(admin, GET_PRODUCT_VARIANTS, {
-    query: `product_id:${existing.id?.split('/').pop()}`
-  });
-  const productVariantsData = await productVariantsRes.json();
-  const productVariants = productVariantsData?.data?.productVariants?.nodes || [];
+  const productVariants = await getAllProductVariants(admin, existing.id);
+
+  log(`🔍 [syncExistingProduct] productId=${existing.id} → ${productVariants.length} variantes existentes en Shopify`);
+  if (productVariants.length > 0) {
+    log(`🔍 [syncExistingProduct] Claves Shopify:`, productVariants.map(ev => buildOptionsKeyFromSelectedOptions(ev.selectedOptions || [])));
+  }
 
   productVariants.forEach(v => {
     v.normalizedOptions = normalizeOptions(v.selectedOptions);
@@ -683,6 +744,8 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   })
 
   groupsState[groupId].totalVariants += productObj.variants.length;
+
+  const matchedShopifyIds = new Set(); // evita procesar el mismo ID de Shopify dos veces
 
   // iterate variants
   for (const variant of productObj.variants) {
@@ -721,8 +784,37 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
     variant.mediaId = imageMap[variant.image] || null;
     const match = findVariant(productVariants, variant);
+    const newKey = buildOptionsKeyFromOptionValues(variant.optionValues || []);
+    log(`🔍 [findVariant] sku=${variant.sku} key="${newKey}" → ${match ? 'ENCONTRADA id=' + match.id : 'NO ENCONTRADA → crear'}`);
 
     if (match) {
+      // Si este ID de Shopify ya fue procesado por otro SKU del feed (mismo barcode/GTIN),
+      // omitirlo para evitar "Duplicated input value" en el bulk update
+      if (matchedShopifyIds.has(match.id)) {
+        sendProgress({
+          type: "variant_processing_success",
+          groupId,
+          productId: existing.id,
+          action: "skipped",
+          variant: {
+            sku: variant.sku,
+            image: variant.image,
+            capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+            color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+            condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+          }
+        });
+        groupsState[groupId].processedVariants++;
+        if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+          sendProgress({
+            type: groupsState[groupId].hasErrors ? "group_error" : "group_success",
+            id: groupId
+          });
+        }
+        continue;
+      }
+      matchedShopifyIds.add(match.id);
+
       // Preparamos variante para actualización con opciones normalizadas
       const variantForUpdate = {
         ...variant,
@@ -818,22 +910,40 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
       if (variantsCreateError.length) {
         variantsCreateError.forEach((err, index) => {
-          sendProgress({
-            type: "variant_processing_error",
-            groupId,
-            productId: existing.id,
-            message: err.message || "Error creando variante",
-            variant: variantsToCreate[index] || null
-          });
+          const isDuplicate =
+            (err.message || "").toLowerCase().includes("duplicated input value") ||
+            (err.message || "").toLowerCase().includes("already exists") ||
+            (err.message || "").toLowerCase().includes("already been taken");
+
+          if (isDuplicate) {
+            // La variante ya existe en Shopify pero no pudo ser detectada — omitir sin error
+            sendProgress({
+              type: "variant_processing_success",
+              groupId,
+              productId: existing.id,
+              action: "skipped",
+              variant: variantsToCreate[index] || null
+            });
+          } else {
+            sendProgress({
+              type: "variant_processing_error",
+              groupId,
+              productId: existing.id,
+              message: err.message || "Error creando variante",
+              variant: variantsToCreate[index] || null
+            });
+            groupsState[groupId].hasErrors = true;
+          }
 
           groupsState[groupId].processedVariants++;
-          groupsState[groupId].hasErrors = true;
 
           if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
             sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
           }
         });
       } else {
+        created += variantsToCreate.length;
+
         for (const v of variantsToCreate) {
           // log('✅ Variante creada:', { ...v });
           sendProgress({
@@ -902,13 +1012,29 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
       if (variantsUpdateError.length) {
         variantsUpdateError.forEach((err, index) => {
-          sendProgress({
-            type: "variant_processing_error",
-            groupId,
-            productId: existing.id,
-            message: err.message || "Error actualizando variante",
-            variant: variantsToUpdate[index] || null
-          });
+          const isAlreadyExists =
+            (err.message || "").toLowerCase().includes("duplicated input value") ||
+            (err.message || "").toLowerCase().includes("already exists") ||
+            (err.message || "").toLowerCase().includes("already been taken");
+
+          if (isAlreadyExists) {
+            sendProgress({
+              type: "variant_processing_success",
+              groupId,
+              productId: existing.id,
+              action: "skipped",
+              variant: variantsToUpdate[index] || null
+            });
+          } else {
+            sendProgress({
+              type: "variant_processing_error",
+              groupId,
+              productId: existing.id,
+              message: err.message || "Error actualizando variante",
+              variant: variantsToUpdate[index] || null
+            });
+            groupsState[groupId].hasErrors = true;
+          }
         });
       } else {
         // log('ImageMap used for updating variants:', { ...imageMap });
