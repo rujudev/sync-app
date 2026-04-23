@@ -16,8 +16,11 @@ import {
   PRODUCT_CREATE_MEDIA,
   PRODUCT_SEARCH,
   PUBLISH_PRODUCT,
+  SET_PRODUCT_METAFIELDS,
   VARIANTS_CREATE,
-  VARIANTS_UPDATE
+  VARIANTS_UPDATE,
+  METAFIELD_DEFINITION_CREATE,
+  METAFIELD_DEFINITION_UPDATE
 } from '../shopify/queries';
 
 export const CONFIG = { LOG: true, RETRIES: 3, RETRY_BASE_DELAY_MS: 200 };
@@ -37,6 +40,71 @@ function sendProgress(event) {
 }
 
 const xmlParser = new XMLParser({ ignoreAttributes: false });
+
+const PRODUCT_METAFIELD_DEFINITIONS = [
+  { name: "Marca", namespace: "custom", key: "brand", type: "single_line_text_field" },
+  { name: "Sistema operativo", namespace: "custom", key: "os", type: "single_line_text_field" },
+  { name: "Modelo", namespace: "custom", key: "model", type: "single_line_text_field" },
+  { name: "Condición", namespace: "custom", key: "condition", type: "single_line_text_field" },
+  { name: "Condiciones disponibles", namespace: "custom", key: "conditions_available", type: "list.single_line_text_field" },
+  { name: "Capacidades disponibles", namespace: "custom", key: "capacities_available", type: "list.single_line_text_field" }
+];
+
+let _metafieldDefinitionsEnsured = false;
+
+async function ensureProductMetafieldDefinitions(admin) {
+  if (_metafieldDefinitionsEnsured) return;
+
+  for (const def of PRODUCT_METAFIELD_DEFINITIONS) {
+    const createRes = await adminGraphql(admin, METAFIELD_DEFINITION_CREATE, {
+      definition: {
+        name: def.name,
+        namespace: def.namespace,
+        key: def.key,
+        type: def.type,
+        ownerType: "PRODUCT",
+        capabilities: {
+          adminFilterable: { enabled: true }
+        }
+      }
+    });
+
+    const createData = await createRes.json();
+    const createErrors = createData?.data?.metafieldDefinitionCreate?.userErrors || [];
+
+    if (createErrors.length === 0) {
+      continue; // creada correctamente
+    }
+
+    // Si ya existe, actualizamos capacidades
+    const alreadyExists = createErrors.some((e) =>
+      String(e?.message || "").toLowerCase().includes("already exists")
+    );
+
+    if (alreadyExists) {
+      const updateRes = await adminGraphql(admin, METAFIELD_DEFINITION_UPDATE, {
+        definition: {
+          namespace: def.namespace,
+          key: def.key,
+          ownerType: "PRODUCT",
+          capabilities: {
+            adminFilterable: { enabled: true }
+          }
+        }
+      });
+
+      const updateData = await updateRes.json();
+      const updateErrors = updateData?.data?.metafieldDefinitionUpdate?.userErrors || [];
+      if (updateErrors.length) {
+        log("⚠️ Error actualizando definición metafield:", def.namespace, def.key, updateErrors);
+      }
+    } else {
+      log("⚠️ Error creando definición metafield:", def.namespace, def.key, createErrors);
+    }
+  }
+
+  _metafieldDefinitionsEnsured = true;
+}
 
 function parseXmlItems(xmlString) {
   const json = xmlParser.parse(xmlString);
@@ -269,13 +337,20 @@ function buildShopifyProductObject(group) {
     used: "usado"
   }
 
+  const PRICE_MARGIN = {
+    apple: 50,
+    default: 35  // Android
+  };
+
   const title = base.modelTitle;
 
   const capacities = uniqStrings(group.map(v => v.capacity));
   const colors = uniqStrings(group.map(v => v.color));
   const conditions = uniqStrings(group.map(v => v.condition));
-
-  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'Apple';
+  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'iOS';
+  const margin = base.brand.toLowerCase() === 'apple'
+    ? PRICE_MARGIN.apple
+    : PRICE_MARGIN.default;
 
   const tags = [
     base.brand.toLowerCase(),
@@ -288,7 +363,9 @@ function buildShopifyProductObject(group) {
     const variant = {
       sku: v.sku,
       barcode: String(v.gtin) || null,
-      price: v.price != null ? Number(v.price).toFixed(2) : "0.00",
+      price: v.price != null
+        ? (Number(v.price) + margin).toFixed(2)
+        : "0.00",
       inventoryPolicy: "CONTINUE",
       optionValues: [
         { optionName: "Capacidad", name: v.capacity },
@@ -334,6 +411,22 @@ function convertVariantForShopify(newVar, imageMap) {
 }
 
 // ===================================================
+const REFURBISHED_LEGAL_NOTICE_HTML = `
+<p>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</p>
+<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/20212<br>1 año de garantía.</p>
+<p>Canon digital: 3,25€ (incluido en el precio)</p>
+`;
+
+function buildDescriptionHtml(baseDescription = "", conditions = []) {
+  const hasRefurbished = conditions.some(c => String(c).toLowerCase() === "refurbished");
+  if (!hasRefurbished) return baseDescription || "";
+
+  const cleanBase = baseDescription || "";
+  return cleanBase
+    ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML}`
+    : REFURBISHED_LEGAL_NOTICE_HTML;
+}
+
 // SANEAR VARIANTES PARA GRAPHQL (NO ENVIAR CAMPOS INTERNOS)
 // ===================================================
 function sanitizeVariantForGraphQL(v) {
@@ -869,6 +962,66 @@ function isImageSmall(dimensions) {
   return width < 600 || height < 600;
 }
 
+async function setProductMetafields(admin, productId, group) {
+  const base = group[0];
+  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'iOS';
+  const conditions = uniqStrings(group.map(v => v.condition));
+  const capacities = uniqStrings(group.map(v => v.capacity));
+
+  const metafields = [
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "brand",
+      value: base.brand,
+      type: "single_line_text_field"
+    },
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "model",
+      value: base.modelTitle,
+      type: "single_line_text_field"
+    },
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "os",
+      value: so,
+      type: "single_line_text_field"
+    },
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "condition",
+      value: conditions[0] || "nuevo",
+      type: "single_line_text_field"
+    },
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "conditions_available",
+      value: JSON.stringify(conditions),
+      type: "list.single_line_text_field"
+    },
+    {
+      ownerId: productId,
+      namespace: "custom",
+      key: "capacities_available",
+      value: JSON.stringify(capacities),
+      type: "list.single_line_text_field"
+    }
+  ];
+
+  const res = await adminGraphql(admin, SET_PRODUCT_METAFIELDS, { metafields });
+  const data = await res.json();
+
+  const errors = data?.data?.metafieldsSet?.userErrors || [];
+  if (errors.length) {
+    log("⚠️ Metafield errors:", errors);
+  }
+}
+
 async function processGroup(admin, groupId, groupItems) {
   const publicationsRes = await adminGraphql(admin, GET_PUBLICATIONS);
   const publicationsData = await publicationsRes.json();
@@ -906,28 +1059,41 @@ async function processGroup(admin, groupId, groupItems) {
         updatedVariants: synced.updated
       });
 
+      await setProductMetafields(admin, product.id, groupItems);
+
       await adminGraphql(admin, PUBLISH_PRODUCT, {
         id: product.id,
         input: publicationsIDs
       });
 
-      return { success, product }
+      return { success, product, synced }
     } catch (err) {
       log("⚠️ Error creating product en processGroup:", err);
       if (err.body?.errors) {
         log("⚠️ An error occurred:", err?.body.errors || err);
       }
     }
+  } else {
+    const synced = await syncExistingProduct(admin, { id: existing.id }, productObj, groupId);
+
+    await setProductMetafields(admin, existing.id, groupItems);
+
+    await adminGraphql(admin, PUBLISH_PRODUCT, {
+      id: existing.id,
+      input: publicationsIDs
+    });
+
+    return { success: true, product: existing, synced };
   }
 
   return { success: false, product: null };
 }
 
 export async function syncXmlString(admin, xmlString) {
-
   console.log('hemos entrado en syncXmlString');
   try {
     resetCancelFlag(); // Reinicia el flag de cancelación al inicio
+    await ensureProductMetafieldDefinitions(admin);
     log("🔄 Starting syncXmlString ...");
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), 3000); // 30 segundos de timeout inicial

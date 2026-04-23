@@ -170,25 +170,50 @@ export const VARIANTS_UPDATE = `
 `;
 
 export const GET_PRODUCT_VARIANTS = `
-    query ProductVariantsList($query: String!) {
-        productVariants(first: 10, query: $query) {
-            nodes {
-                id
-                title
-                barcode
-                price
-                selectedOptions {
-                    name
-                    value
-                }
-            }
-            pageInfo {
-                startCursor
-                endCursor
-            }
-        }
-    }
+  query ProductVariantsList($query: String!, $first: Int!, $after: String) {,
+    productVariants(first: $first, after: $after, query: $query) {,
+      nodes {,
+        id,
+        sku,
+        barcode,
+        price,
+        selectedOptions {,
+          name,
+          value,
+        },
+        image {,
+          url,
+        },
+      },
+      pageInfo {,
+        hasNextPage,
+        endCursor,
+      },
+    },
+  }
 `;
+
+
+// export const GET_PRODUCT_VARIANTS = `
+//     query ProductVariantsList($query: String!) {
+//         productVariants(first: 10, query: $query) {
+//             nodes {
+//                 id
+//                 title
+//                 barcode
+//                 price
+//                 selectedOptions {
+//                     name
+//                     value
+//                 }
+//             }
+//             pageInfo {
+//                 startCursor
+//                 endCursor
+//             }
+//         }
+//     }
+// `;
 
 export const GET_PUBLICATIONS = `
   query GetPublications {
@@ -322,3 +347,65 @@ export const CREATE_COLLECTION = `
     }
   }
 `
+
+export const SET_PRODUCT_METAFIELDS = `
+  mutation SetProductMetafields($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields {
+        id
+        namespace
+        key
+        value
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+export const METAFIELD_DEFINITION_CREATE = `
+  mutation CreateMetafieldDefinition($definition: MetafieldDefinitionInput!) {
+    metafieldDefinitionCreate(definition: $definition) {
+      createdDefinition {
+        id
+        namespace
+        key
+        name
+        type {
+          name
+          category  
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+export const METAFIELD_DEFINITION_UPDATE = `
+  mutation UpdateMetafieldDefinition($definition: MetafieldDefinitionUpdateInput!) {
+    metafieldDefinitionUpdate(definition: $definition) {
+      updatedDefinition {
+        id
+        namespace
+        key
+        name
+        capabilities {
+          adminFilterable {
+            enabled
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
