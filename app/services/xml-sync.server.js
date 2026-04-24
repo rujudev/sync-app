@@ -14,6 +14,7 @@ import {
   GET_PUBLICATIONS,
   PRODUCT_CREATE,
   PRODUCT_CREATE_MEDIA,
+  PRODUCT_UPDATE,
   PRODUCT_SEARCH,
   PUBLISH_PRODUCT,
   SET_PRODUCT_METAFIELDS,
@@ -198,11 +199,15 @@ function extractModelTitle(title = "", brand = "") {
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
 
-  // 14) Añadir marca si no está al principio
+  // 14) Ajustar prefijo de marca
+  // Apple: no anteponer "Apple" al titulo (quedara "Iphone ...")
+  // Resto: mantener marca al inicio para agrupar y estandarizar
   if (brand) {
-    const b = brand.toLowerCase();
-    if (!t.toLowerCase().startsWith(b + " ")) {
-      t = `${brand} ${t}`;
+    const b = normalizeBrand(brand);
+    if (b === "apple") {
+      t = t.replace(/^apple\s+/i, "").trim();
+    } else if (!t.toLowerCase().startsWith(b + " ")) {
+      t = `${String(brand).trim()} ${t}`.trim();
     }
   }
 
@@ -218,6 +223,16 @@ function uniqStrings(arr = []) {
   return Array.from(new Set(arr.filter(Boolean).map(s => String(s).trim()))).map(x => x);
 }
 
+function normalizeBrand(brand = "") {
+  return String(brand || "").trim().toLowerCase();
+}
+
+function pickGroupDescription(group = []) {
+  return group
+    .map((item) => String(item?.description || "").trim())
+    .find(Boolean) || "";
+}
+
 function normalizeFeedItem(item) {
   const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
 
@@ -226,7 +241,7 @@ function normalizeFeedItem(item) {
   if (id.includes("TEST")) return null;
 
   const title = String(get("title") || "");
-  const brand = String(get("brand") || "");
+  const brand = String(get("brand") || "").trim();
 
   const capacityMatch = title.match(/(\d{1,4}GB|\d{1,4}TB)/i);
 
@@ -347,15 +362,25 @@ function buildShopifyProductObject(group) {
   const capacities = uniqStrings(group.map(v => v.capacity));
   const colors = uniqStrings(group.map(v => v.color));
   const conditions = uniqStrings(group.map(v => v.condition));
-  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'iOS';
-  const margin = base.brand.toLowerCase() === 'apple'
+  const normalizedBrand = normalizeBrand(base.brand);
+  const so = normalizedBrand === 'apple' ? 'iOS' : 'Android';
+  const margin = normalizedBrand === 'apple'
     ? PRICE_MARGIN.apple
     : PRICE_MARGIN.default;
+  const description = pickGroupDescription(group);
 
-  const tags = [
-    base.brand.toLowerCase(),
+  const CONDITION_ES = {
+    new: "nuevo",
+    refurbished: "reacondicionado",
+    used: "usado"
+  };
+
+  const tags = uniqStrings([
+    normalizedBrand,
     so.toLowerCase(),
-  ]
+    normalizeString(base.modelKey),
+    ...conditions.map((c) => CONDITION_ES[normalizeString(c)] || normalizeString(c))
+  ]);
 
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
 
@@ -384,7 +409,7 @@ function buildShopifyProductObject(group) {
     title,
     tags,
     vendor: "Cosladafon",
-    descriptionHtml: buildDescriptionHtml(base.description, conditions, so),
+    descriptionHtml: buildDescriptionHtml(description, conditions),
     productOptions: [
       { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
       { name: "Color", values: colors.map(c => ({ name: c })) },
@@ -421,12 +446,12 @@ const REFURBISHED_LEGAL_NOTICE_HTML = `
 <p>Canon digital: 3,25€ (incluido en el precio)</p>
 `;
 
-function buildDescriptionHtml(baseDescription = "", conditions = [], os = "") {
-  const isAndroid = String(os || "").toLowerCase() === "android";
-  const hasRefurbished = conditions.some(c => String(c).toLowerCase() === "refurbished");
-  if (!isAndroid || !hasRefurbished) return baseDescription || "";
-
+function buildDescriptionHtml(baseDescription = "", conditions = []) {
+  const hasRefurbished = conditions.some(c => ["refurbished", "used"].includes(String(c).toLowerCase()));
   const cleanBase = baseDescription || "";
+
+  if (!hasRefurbished) return cleanBase;
+
   return cleanBase
     ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML}`
     : REFURBISHED_LEGAL_NOTICE_HTML;
@@ -552,6 +577,111 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
       return ({ errors: err.body?.errors }, { status: 500 });
     }
     return ({ message: "An error occurred" }, { status: 500 });
+  }
+}
+
+function normalizeTextField(v) {
+  return String(v || "").trim();
+}
+
+function normalizeTags(tags = []) {
+  return (Array.isArray(tags) ? tags : [])
+    .map((t) => String(t || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function computeProductUpdate(existingProduct, desiredProduct) {
+  const product = { id: existingProduct.id };
+  const changedFields = [];
+
+  if (normalizeTextField(existingProduct?.title) !== normalizeTextField(desiredProduct?.title)) {
+    product.title = desiredProduct.title;
+    changedFields.push("title");
+  }
+
+  if (normalizeTextField(existingProduct?.vendor) !== normalizeTextField(desiredProduct?.vendor)) {
+    product.vendor = desiredProduct.vendor;
+    changedFields.push("vendor");
+  }
+
+  if (normalizeTextField(existingProduct?.descriptionHtml) !== normalizeTextField(desiredProduct?.descriptionHtml)) {
+    product.descriptionHtml = desiredProduct.descriptionHtml;
+    changedFields.push("descriptionHtml");
+  }
+
+  const existingTags = normalizeTags(existingProduct?.tags || []);
+  const desiredTags = normalizeTags(desiredProduct?.tags || []);
+  if (JSON.stringify(existingTags) !== JSON.stringify(desiredTags)) {
+    product.tags = desiredProduct.tags || [];
+    changedFields.push("tags");
+  }
+
+  return { product, changedFields };
+}
+
+async function updateShopifyProduct(admin, existingProduct, productObj, groupId = null) {
+  const productId = existingProduct?.id;
+  const { product, changedFields } = computeProductUpdate(existingProduct, productObj);
+
+  sendProgress({
+    type: "product_update_request",
+    title: productObj.title,
+    productId,
+    groupId,
+    changedFields
+  });
+
+  if (changedFields.length === 0) {
+    sendProgress({
+      type: "product_updated",
+      productId,
+      groupId,
+      changedFields,
+      noChanges: true
+    });
+    return { success: true, product: existingProduct, changedFields, noChanges: true };
+  }
+
+  try {
+    const response = await adminGraphql(admin, PRODUCT_UPDATE, {
+      product
+    });
+
+    const result = await response.json();
+    const userErrors = result?.data?.productUpdate?.userErrors || [];
+
+    if (userErrors.length) {
+      log("⚠️ Error updating product fields:", userErrors);
+      sendProgress({
+        type: "product_update_error",
+        productId,
+        groupId,
+        errors: userErrors,
+        changedFields
+      });
+      return { success: false, errors: userErrors };
+    }
+
+    sendProgress({
+      type: "product_updated",
+      productId,
+      groupId,
+      changedFields,
+      noChanges: false
+    });
+
+    return { success: true, product: result?.data?.productUpdate?.product || null };
+  } catch (err) {
+    log("⚠️ Error updating product in updateShopifyProduct:", err);
+    sendProgress({
+      type: "product_update_error",
+      productId,
+      groupId,
+      errors: [{ message: err?.message || String(err) }],
+      changedFields
+    });
+    return { success: false, errors: [{ message: err?.message || String(err) }] };
   }
 }
 
@@ -1090,7 +1220,7 @@ function isImageSmall(dimensions) {
 
 async function setProductMetafields(admin, productId, group) {
   const base = group[0];
-  const so = base.brand.toLowerCase() !== 'apple' ? 'Android' : 'iOS';
+  const so = normalizeBrand(base.brand) === 'apple' ? 'iOS' : 'Android';
   const conditions = uniqStrings(group.map(v => v.condition));
   const capacities = uniqStrings(group.map(v => v.capacity));
 
@@ -1099,7 +1229,7 @@ async function setProductMetafields(admin, productId, group) {
       ownerId: productId,
       namespace: "custom",
       key: "brand",
-      value: base.brand,
+      value: String(base.brand || "").trim(),
       type: "single_line_text_field"
     },
     {
@@ -1200,6 +1330,8 @@ async function processGroup(admin, groupId, groupItems) {
       }
     }
   } else {
+    await updateShopifyProduct(admin, existing, productObj, groupId);
+
     const synced = await syncExistingProduct(admin, { id: existing.id }, productObj, groupId);
 
     await setProductMetafields(admin, existing.id, groupItems);
