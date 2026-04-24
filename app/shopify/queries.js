@@ -6,6 +6,8 @@ export const PRODUCT_SEARCH = `
         node {
           id
           title
+          vendor
+          descriptionHtml
           handle
           tags
           variants(first: 50) {
@@ -41,6 +43,24 @@ export const PRODUCT_CREATE = `
         }
       }
       userErrors { field message }
+    }
+  }
+`;
+
+export const PRODUCT_UPDATE = `
+  mutation UpdateProduct($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        descriptionHtml
+        tags
+        vendor
+      }
+      userErrors {
+        field
+        message
+      }
     }
   }
 `;
