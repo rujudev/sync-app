@@ -338,7 +338,9 @@ export default function Index() {
             created: 0,
             updated: 0,
             skipped: 0,
-            errors: 0
+            errors: 0,
+            productChangedFields: [],
+            productNoChanges: false
           } : g
         )
       });
@@ -415,6 +417,82 @@ export default function Index() {
           ...prev.recentProducts.slice(0, 9)
         ]
       }));
+    });
+
+    es.addEventListener("product_updated", e => {
+      const d = JSON.parse(e.data);
+      const changed = Array.isArray(d.changedFields) ? d.changedFields : [];
+      const fieldsText = changed.length ? changed.join(", ") : "sin cambios";
+      const stepText = d.noChanges
+        ? `Producto sin cambios: ${d.groupId || d.productId}`
+        : `Producto actualizado (${fieldsText}): ${d.groupId || d.productId}`;
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: stepText,
+        recentProducts: [
+          {
+            type: "product_updated",
+            title: d.groupId || d.productId,
+            productId: d.productId,
+            changedFields: changed,
+            noChanges: !!d.noChanges
+          },
+          ...prev.recentProducts.slice(0, 9)
+        ]
+      }));
+
+      if (d.groupId) {
+        setGroupStatus(prev =>
+          prev.map(g =>
+            g.id === d.groupId
+              ? {
+                ...g,
+                productChangedFields: changed,
+                productNoChanges: !!d.noChanges
+              }
+              : g
+          )
+        );
+      }
+    });
+
+    es.addEventListener("product_update_error", e => {
+      const d = JSON.parse(e.data);
+      const changed = Array.isArray(d.changedFields) ? d.changedFields : [];
+      const fieldsText = changed.length ? ` (${changed.join(", ")})` : "";
+
+      setSyncState(prev => ({
+        ...prev,
+        currentStep: `Error actualizando producto${fieldsText}: ${d.groupId || d.productId}`,
+        errorItems: prev.errorItems + 1,
+        recentProducts: [
+          {
+            type: "product_update_error",
+            title: d.groupId || d.productId,
+            productId: d.productId,
+            changedFields: changed,
+            message: d?.errors?.[0]?.message || "Error actualizando producto"
+          },
+          ...prev.recentProducts.slice(0, 9)
+        ]
+      }));
+
+      if (d.groupId) {
+        setGroupStatus(prev =>
+          prev.map(g =>
+            g.id === d.groupId
+              ? {
+                ...g,
+                status: "error",
+                error: d?.errors?.[0]?.message || "Error actualizando producto",
+                productChangedFields: changed,
+                productNoChanges: false
+              }
+              : g
+          )
+        );
+      }
     });
 
     es.addEventListener("product_media_uploaded", e => {
@@ -1004,6 +1082,16 @@ export default function Index() {
                               {g.totalVariants ? `${g.totalVariants} variantes` : ''}
                             </s-text>
                           </s-stack>
+
+                          {(g.productNoChanges || (g.productChangedFields || []).length > 0) && (
+                            <s-stack direction="inline" columnGap="small" blockSize="auto" alignItems="center">
+                              <s-badge tone={g.productNoChanges ? "subdued" : "info"} size="small">
+                                {g.productNoChanges
+                                  ? "📝 Producto sin cambios"
+                                  : `📝 Producto actualizado: ${(g.productChangedFields || []).join(', ')}`}
+                              </s-badge>
+                            </s-stack>
+                          )}
 
                           <s-divider />
 
