@@ -248,7 +248,7 @@ function normalizeFeedItem(item) {
   const modelTitle = extractModelTitle(title, brand);
   const modelKey = computeModelKey(title, brand);
 
-  let priceRaw = String(get("price") || "").trim();
+  let priceRaw = String(get("sale_price") || "").trim();
   priceRaw = priceRaw.split(" ")[0].replace(",", ".").replace(/[^\d.]/g, "");
 
   return {
