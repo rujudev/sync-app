@@ -12,16 +12,16 @@ import {
   GET_PRODUCT_MEDIA,
   GET_PRODUCT_VARIANTS,
   GET_PUBLICATIONS,
+  METAFIELD_DEFINITION_CREATE,
+  METAFIELD_DEFINITION_UPDATE,
   PRODUCT_CREATE,
   PRODUCT_CREATE_MEDIA,
-  PRODUCT_UPDATE,
   PRODUCT_SEARCH,
+  PRODUCT_UPDATE,
   PUBLISH_PRODUCT,
   SET_PRODUCT_METAFIELDS,
   VARIANTS_CREATE,
-  VARIANTS_UPDATE,
-  METAFIELD_DEFINITION_CREATE,
-  METAFIELD_DEFINITION_UPDATE
+  VARIANTS_UPDATE
 } from '../shopify/queries';
 
 export const CONFIG = { LOG: true, RETRIES: 3, RETRY_BASE_DELAY_MS: 200 };
@@ -378,6 +378,7 @@ function buildShopifyProductObject(group) {
   const tags = uniqStrings([
     normalizedBrand,
     so.toLowerCase(),
+    'cosladafon',
     normalizeString(base.modelKey),
     ...conditions.map((c) => CONDITION_ES[normalizeString(c)] || normalizeString(c))
   ]);
@@ -408,7 +409,7 @@ function buildShopifyProductObject(group) {
   return {
     title,
     tags,
-    vendor: "Cosladafon",
+    vendor: "SecondTech",
     descriptionHtml: buildDescriptionHtml(description, conditions),
     productOptions: [
       { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
