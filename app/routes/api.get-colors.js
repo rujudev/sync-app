@@ -55,6 +55,8 @@ export const action = async ({ request }) => {
     }
   }
 
+  console.log("Colores encontrados:", allColors);
+
   return Response.json({
     success: true,
     colors: Array.from(allColors)
