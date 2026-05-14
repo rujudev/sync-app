@@ -385,26 +385,28 @@ function buildShopifyProductObject(group) {
 
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
 
-  const variants = group.map((v) => {
-    const variant = {
-      sku: v.sku,
-      barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
-      price: v.price != null
-        ? (Number(v.price) + margin).toFixed(2)
-        : "0.00",
-      inventoryPolicy: "CONTINUE",
-      optionValues: [
-        { optionName: "Capacidad", name: v.capacity },
-        { optionName: "Color", name: v.color },
-        { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
-      ],
-      image: v.image || null
-    }
+  const variants = group
+    .filter((v) => v.price > 180)
+    .map((v) => {
+      const variant = {
+        sku: v.sku,
+        barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
+        price: v.price != null
+          ? (Number(v.price) + margin).toFixed(2)
+          : "0.00",
+        inventoryPolicy: "CONTINUE",
+        optionValues: [
+          { optionName: "Capacidad", name: v.capacity },
+          { optionName: "Color", name: v.color },
+          { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
+        ],
+        image: v.image || null
+      }
 
-    variant.normalizedOptions = normalizeOptions(variant.optionValues);
+      variant.normalizedOptions = normalizeOptions(variant.optionValues);
 
-    return variant;
-  });
+      return variant;
+    });
 
   return {
     title,
