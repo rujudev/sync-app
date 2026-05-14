@@ -442,9 +442,11 @@ function convertVariantForShopify(newVar, imageMap) {
 
 // ===================================================
 const REFURBISHED_LEGAL_NOTICE_HTML = `
-<p>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</p>
-<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/20212<br>1 año de garantía.</p>
-<p>Canon digital: 3,25€ (incluido en el precio)</p>
+<h6>Información legal y garantía</h6>
+<p><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
+<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/20212</p>
+<p><strong>1 año de garantía.</strong></p>
+<p>Canon digital: <strong>3,25 €</strong> (incluido en el precio)</p>
 `;
 
 function buildDescriptionHtml(baseDescription = "", conditions = []) {
@@ -560,7 +562,7 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
       product: {
         title: input.title,
         vendor: input.vendor,
-        descriptionHtml: input.descriptionHtml,
+        descriptionHtml: removeYouTubeTags(input.descriptionHtml),
         handle: input.handle,
         tags: input.tags,
         productOptions: input.productOptions,
@@ -583,6 +585,11 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
 
 function normalizeTextField(v) {
   return String(v || "").trim();
+}
+
+function removeYouTubeTags(text) {
+  if (!text) return text;
+  return text.replace(/\[youtube\][\s\S]*?\[\/youtube\]/gi, '').replace(/\s{2,}/g, ' ').trim();
 }
 
 function normalizeTags(tags = []) {
