@@ -386,14 +386,12 @@ function buildShopifyProductObject(group) {
   const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
 
   const variants = group
-    .filter((v) => v.price > 180)
+    .filter((v) => parseFloat(v.price) > 180)
     .map((v) => {
       const variant = {
         sku: v.sku,
         barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
-        price: v.price != null
-          ? (Number(v.price) + margin).toFixed(2)
-          : "0.00",
+        price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
         inventoryPolicy: "CONTINUE",
         optionValues: [
           { optionName: "Capacidad", name: v.capacity },
@@ -1452,3 +1450,7 @@ export async function syncXmlString(admin, xmlString) {
 }
 
 // ====================== End ======================
+
+// Export helpers for tests and external use
+export { buildShopifyProductObject, groupByModelKey, normalizeFeedItem, parseXmlItems };
+
