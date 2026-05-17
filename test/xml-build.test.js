@@ -23,8 +23,6 @@ test('buildShopifyProductObject provide products with price > 180', () => {
 
         const productObj = buildShopifyProductObject(group);
 
-        console.log(`Built product object for group ${key}:`, productObj); // Log para verificar el producto construido
-
         // expect(productObj.variants.length).toBe(3); // Verificamos que el producto construido tenga 4 variantes
 
         productObj.variants.forEach(variant => {
