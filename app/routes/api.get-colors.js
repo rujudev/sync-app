@@ -38,11 +38,13 @@ export const action = async ({ request }) => {
     const data = await res.json();
     const products = data?.data?.products;
 
+    console.log("Productos obtenidos:", products);
     // Añadir colores
     for (const edge of products.edges) {
       for (const variant of edge.node.variants.nodes) {
         const colorOpt = variant.selectedOptions.find(o => o.name.toLowerCase() === "color");
         if (colorOpt) {
+          console.log("Color encontrado:", colorOpt.value);
           allColors.add(colorOpt.value.trim());
         }
       }

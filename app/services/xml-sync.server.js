@@ -7,6 +7,7 @@ import { XMLParser } from "fast-xml-parser";
 import { COLORS } from '../constants/colors.js';
 import { FORBIDDEN_MODEL_WORDS } from '../constants/forbidden-words.js';
 import { MODELS } from '../constants/models.js';
+import { extractCapacity } from './attributes-utils.js';
 import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
 import {
   GET_PRODUCT_MEDIA,
@@ -243,7 +244,16 @@ function normalizeFeedItem(item) {
   const title = String(get("title") || "");
   const brand = String(get("brand") || "").trim();
 
-  const capacityMatch = title.match(/(\d{1,4}GB|\d{1,4}TB)/i);
+  const rawCapacity = extractCapacity({
+    title,
+    sku: get("id"),
+    image: get("image_link"),
+    description: get("description")
+  });
+
+  const capacity = rawCapacity 
+    ? String(rawCapacity).toUpperCase().replace(/\s+/g, "") 
+    : null;
 
   const modelTitle = extractModelTitle(title, brand);
   const modelKey = computeModelKey(title, brand);
@@ -259,7 +269,7 @@ function normalizeFeedItem(item) {
     modelKey,
     description: (get("description") || "").replace(/Cosladafon/gi, "Secondtech"),
     brand,
-    capacity: capacityMatch ? capacityMatch[1].toUpperCase() : "Estándar",
+    capacity: capacity,
     // color: (colorFinal || "Sin color").toLowerCase(),
     color: get("color").toLowerCase(),
     condition: (get("condition") || "new").toLowerCase(),
@@ -405,6 +415,8 @@ function buildShopifyProductObject(group) {
 
       return variant;
     });
+
+  console.log(`Variantes de ${title}:`, [...variants]);
 
   return {
     title,
