@@ -9,6 +9,7 @@ import { FORBIDDEN_MODEL_WORDS } from '../constants/forbidden-words.js';
 import { MODELS } from '../constants/models.js';
 import { extractCapacity } from './attributes-utils.js';
 import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
+import { EventEmitter } from "events";
 import {
   GET_PRODUCT_MEDIA,
   GET_PRODUCT_VARIANTS,
@@ -29,16 +30,31 @@ export const CONFIG = { LOG: true, RETRIES: 3, RETRY_BASE_DELAY_MS: 200 };
 export const log = (...args) => CONFIG.LOG && console.log(new Date().toISOString(), ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const groupsState = {};
-let _sendProgress = null;
-export function attachSendProgress(fn) {
-  _sendProgress = fn;
+if (!globalThis.__syncEmitter) {
+  globalThis.__syncEmitter = new EventEmitter();
+  globalThis.__syncEmitter.setMaxListeners(50);
 }
 
-function sendProgress(event) {
-  if (_sendProgress) {
-    try { _sendProgress(event); } catch (e) { console.warn("sendProgress failed", e); }
-  }
+const groupsState = {};
+const _sendProgressConnections = new Set();
+export function attachSendProgress(fn) {
+  _sendProgressConnections.add(fn);
+  
+  // Devolvemos una función para limpiar cuando la conexión muera
+  return () => {
+    _sendProgressConnections.delete(fn);
+  };
+}
+
+export function sendProgress(event) {
+  // En lugar de llamar a uno solo, le enviamos el evento a todas las conexiones abiertas
+  _sendProgressConnections.forEach((sendFn) => {
+    try { 
+      sendFn(event); 
+    } catch (e) { 
+      console.warn("sendProgress failed para una conexión", e); 
+    }
+  });
 }
 
 const xmlParser = new XMLParser({ ignoreAttributes: false });
@@ -273,7 +289,7 @@ function normalizeFeedItem(item) {
     // color: (colorFinal || "Sin color").toLowerCase(),
     color: get("color").toLowerCase(),
     condition: (get("condition") || "new").toLowerCase(),
-    price: parseFloat(priceRaw) || null,
+    price: parseFloat(priceRaw),
     image: get("image_link") || null,
     gtin: get("gtin") || null,
     availability: get("availability") || null,
@@ -352,32 +368,54 @@ async function findExistingProduct(admin, group) {
   return null;
 }
 
+function sortCapacities(a, b) {
+  const parseCapacity = (str) => {
+    const num = parseFloat(str);
+    if (isNaN(num)) return 0;
+    // Si contiene 'TB' o 'TERA', lo multiplicamos por 1024 para normalizar a GB
+    if (/TB|TERA/i.test(str)) {
+      return num * 1024;
+    }
+    return num;
+  };
+  return parseCapacity(a) - parseCapacity(b);
+}
+
 // ====================== Build Shopify product object ======================
 function buildShopifyProductObject(group) {
   const base = group[0];
-
+  const normalizedBrand = normalizeBrand(base.brand);
+  const so = normalizedBrand === 'apple' ? 'iOS' : 'Android';
+  
+  const PRICE_MARGIN = {
+    apple: 70,
+    default: 60 // Android
+  };
+  
   const CONDITION = {
     new: "nuevo",
     refurbished: "reacondicionado",
     used: "usado"
-  }
-
-  const PRICE_MARGIN = {
-    apple: 50,
-    default: 35  // Android
   };
 
-  const title = base.modelTitle;
-
-  const capacities = uniqStrings(group.map(v => v.capacity));
-  const colors = uniqStrings(group.map(v => v.color));
-  const conditions = uniqStrings(group.map(v => v.condition));
-  const normalizedBrand = normalizeBrand(base.brand);
-  const so = normalizedBrand === 'apple' ? 'iOS' : 'Android';
   const margin = normalizedBrand === 'apple'
     ? PRICE_MARGIN.apple
     : PRICE_MARGIN.default;
-  const description = pickGroupDescription(group);
+
+  const title = base.modelTitle;
+
+  const validItems = group.filter(v => {
+    const price = Number(v.price) || 0;
+    const minPrice = so === 'iOS' ? 219 : 180;
+    const capacity = String(v.capacity || "").toUpperCase().replace(/\s+/g, "");
+    const is64 = /^64(?:GB)?$/i.test(capacity);
+    return price > minPrice && !is64;
+  });
+
+  const capacities = uniqStrings(validItems.map(v => v.capacity)).sort(sortCapacities);
+  const colors = uniqStrings(validItems.map(v => v.color));
+  const conditions = uniqStrings(validItems.map(v => v.condition));
+  const description = pickGroupDescription(validItems);
 
   const CONDITION_ES = {
     new: "nuevo",
@@ -390,31 +428,28 @@ function buildShopifyProductObject(group) {
     so.toLowerCase(),
     'cosladafon',
     normalizeString(base.modelKey),
-    ...conditions.map((c) => CONDITION_ES[normalizeString(c)] || normalizeString(c))
+    ...conditions.map(c => CONDITION_ES[normalizeString(c)] || normalizeString(c))
   ]);
 
-  const images = uniqStrings(group.map(v => v.image)).map(src => ({ originalSrc: src }));
+  const images = uniqStrings(validItems.map(v => v.image)).map(src => ({ originalSrc: src }));
 
-  const variants = group
-    .filter((v) => parseFloat(v.price) > 180)
-    .map((v) => {
-      const variant = {
-        sku: v.sku,
-        barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
-        price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
-        inventoryPolicy: "CONTINUE",
-        optionValues: [
-          { optionName: "Capacidad", name: v.capacity },
-          { optionName: "Color", name: v.color },
-          { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
-        ],
-        image: v.image || null
-      }
+  const variants = validItems.map(v => {
+    const variant = {
+      sku: v.sku,
+      barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
+      price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
+      inventoryPolicy: "CONTINUE",
+      optionValues: [
+        { optionName: "Capacidad", name: v.capacity },
+        { optionName: "Color", name: v.color },
+        { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
+      ],
+      image: v.image || null
+    };
 
-      variant.normalizedOptions = normalizeOptions(variant.optionValues);
-
-      return variant;
-    });
+    variant.normalizedOptions = normalizeOptions(variant.optionValues);
+    return variant;
+  });
 
   console.log(`Variantes de ${title}:`, [...variants]);
 
@@ -587,11 +622,14 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
     return { success: true, product: productData };
   } catch (err) {
     log("⚠️ Error creating product en createShopifyProduct:", err);
+
+    const errors = err.body?.errors || [{ message: err?.message || String(err) }];
+
     if (err.body?.errors) {
-      log("⚠️ Error creating product:", err?.body.errors || err);
-      return ({ errors: err.body?.errors }, { status: 500 });
+      log("⚠️ Error creating product:", errors);
     }
-    return ({ message: "An error occurred" }, { status: 500 });
+
+    return ({ success: false, product: null, errors });
   }
 }
 
@@ -1311,6 +1349,15 @@ async function processGroup(admin, groupId, groupItems) {
 
   let productObj = buildShopifyProductObject(groupItems);
 
+  if (!productObj || !productObj.variants || productObj.variants.length === 0) {
+    sendProgress({
+      type: "group_error",
+      id: groupId,
+      error: "No hay variantes válidas para crear el producto"
+    });
+    return { success: false, product: null };
+  }
+
   // find existing
   const existing = await findExistingProduct(admin, groupItems);
 
@@ -1318,7 +1365,12 @@ async function processGroup(admin, groupId, groupItems) {
     log("🟢 Creating product:", productObj.title);
 
     try {
-      const { success, product } = await createShopifyProduct(admin, productObj, groupId);
+      const { success, product, errors } = await createShopifyProduct(admin, productObj, groupId);
+
+      if (!success || !product) {
+        log('⚠️ No se creó el producto', productObj.title, errors);
+        return { success: false, product: null };
+      }
 
       sendProgress({
         type: "product_created",
