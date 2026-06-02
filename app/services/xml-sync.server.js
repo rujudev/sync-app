@@ -7,10 +7,11 @@ import { XMLParser } from "fast-xml-parser";
 import { COLORS } from '../constants/colors.js';
 import { FORBIDDEN_MODEL_WORDS } from '../constants/forbidden-words.js';
 import { MODELS } from '../constants/models.js';
-import { extractCapacity } from './attributes-utils.js';
+import { extractCapacity, extractColorFromTitle } from './attributes-utils.js';
 import { resetCancelFlag, wasCancelled } from '../routes/api.sync-cancel.js';
 import { EventEmitter } from "events";
 import {
+  GET_INVENTORY_ITEM,
   GET_PRODUCT_MEDIA,
   GET_PRODUCT_VARIANTS,
   GET_PUBLICATIONS,
@@ -21,8 +22,10 @@ import {
   PRODUCT_SEARCH,
   PRODUCT_UPDATE,
   PUBLISH_PRODUCT,
+  SET_INVENTORY_ITEM,
   SET_PRODUCT_METAFIELDS,
   VARIANTS_CREATE,
+  VARIANTS_INPUT,
   VARIANTS_UPDATE
 } from '../shopify/queries';
 
@@ -124,10 +127,47 @@ async function ensureProductMetafieldDefinitions(admin) {
   _metafieldDefinitionsEnsured = true;
 }
 
+function getNumericPrice(item) {
+  const priceRaw = String(item["g:sale_price"]).trim();
+  const cleanPrice = priceRaw.split(" ")[0].replace(",", ".").replace(/[^\d.]/g, "");
+  return parseFloat(cleanPrice) || 0;
+}
+
 function parseXmlItems(xmlString) {
   const json = xmlParser.parse(xmlString);
   const items = json?.rss?.channel?.item || [];
-  return Array.isArray(items) ? items : [items];
+  const rawItemsArray = Array.isArray(items) ? items : [items];
+
+  // Map para guardar el producto con mayor precio indexado por g:id
+  const uniqueItemsMap = new Map();
+
+  for (const item of rawItemsArray) {
+    const id = String(item["g:id"] ?? item["id"] ?? "").trim();
+    
+    // Si no tiene ID (caso extraño pero posible), lo procesamos por defecto
+    if (!id) {
+      uniqueItemsMap.set(Symbol('empty-id'), item);
+      continue;
+    }
+
+    const currentPrice = getNumericPrice(item);
+
+    if (uniqueItemsMap.has(id)) {
+      const existingItem = uniqueItemsMap.get(id);
+      const existingPrice = getNumericPrice(existingItem);
+
+      // Si el producto actual tiene un precio de oferta estrictamente mayor, reemplaza al anterior
+      if (currentPrice > existingPrice) {
+        uniqueItemsMap.set(id, item);
+      }
+    } else {
+      // Si el g:id no se ha registrado aún, se añade al Map
+      uniqueItemsMap.set(id, item);
+    }
+  }
+
+  // Devolvemos únicamente los productos ganadores (los de mayor precio)
+  return Array.from(uniqueItemsMap.values());
 }
 
 function normalizeText(s = "") {
@@ -194,9 +234,20 @@ function extractModelTitle(title = "", brand = "") {
   t = t.replace(/\b(128|256|512|1024)\b/gi, " ");
 
   // 8) Expandir sufijos pegados al número (S25FE → S25 FE)
-  MODELS.forEach(suf => {
-    t = t.replace(new RegExp(`(\\d)(${suf})`, "i"), "$1 $2");
-  });
+  // Usamos una copia minimizada para comprobaciones y aplicamos
+  // reemplazos seguros con sufijos escapados y ordenados por longitud.
+  let tCheck = String(t || "").toLowerCase();
+  const sortedModels = [...MODELS].sort((a, b) => b.length - a.length);
+  for (const suf of sortedModels) {
+    const sufEsc = suf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Solo aplicar si la versión minimizada contiene el patrón
+    if (new RegExp(`\\d${sufEsc}\\b`, "i").test(tCheck)) {
+      const rx = new RegExp(`(\\d)(${sufEsc})\\b`, "ig");
+      t = t.replace(rx, "$1 $2");
+      // actualizar la copia minimizada para siguientes comprobaciones
+      tCheck = String(t || "").toLowerCase();
+    }
+  }
 
   // 9) Normalizar espacios
   t = t.replace(/\s+/g, " ").trim();
@@ -271,8 +322,20 @@ function normalizeFeedItem(item) {
     ? String(rawCapacity).toUpperCase().replace(/\s+/g, "") 
     : null;
 
-  const modelTitle = extractModelTitle(title, brand);
-  const modelKey = computeModelKey(title, brand);
+  let modelTitle = extractModelTitle(title, brand);
+  let modelKey = computeModelKey(title, brand);
+
+  const colorFromTitle = extractColorFromTitle(title);
+  const color = colorFromTitle || normalizeString(get("color"))
+
+  // Tratar sufijo "FE" como parte del modelo cuando viene en el título
+  // (ej. "Samsung Galaxy S24 FE") para evitar agruparlo con el S24
+  // y crear variantes en lugar de un producto aparte.
+  const hasFESuffix = /\bFE\b/i.test(title);
+  if (hasFESuffix) {
+    if (!/\bFE\b/i.test(modelTitle)) modelTitle = `${modelTitle} FE`;
+    if (!modelKey.split(/\s+/).includes('fe')) modelKey = `${modelKey} fe`;
+  }
 
   let priceRaw = String(get("sale_price") || "").trim();
   priceRaw = priceRaw.split(" ")[0].replace(",", ".").replace(/[^\d.]/g, "");
@@ -285,9 +348,9 @@ function normalizeFeedItem(item) {
     modelKey,
     description: (get("description") || "").replace(/Cosladafon/gi, "Secondtech"),
     brand,
-    capacity: capacity,
+    capacity,
     // color: (colorFinal || "Sin color").toLowerCase(),
-    color: get("color").toLowerCase(),
+    color,
     condition: (get("condition") || "new").toLowerCase(),
     price: parseFloat(priceRaw),
     image: get("image_link") || null,
@@ -301,6 +364,7 @@ function groupByModelKey(items) {
   const groups = {};
   for (const item of items) {
     const key = item.modelKey || item.groupId || normalizeText(item.title);
+    // const key = item.groupId || item.modelKey || normalizeText(item.title);
     if (!groups[key]) groups[key] = [];
     groups[key].push(item);
   }
@@ -433,8 +497,13 @@ function buildShopifyProductObject(group) {
 
   const images = uniqStrings(validItems.map(v => v.image)).map(src => ({ originalSrc: src }));
 
-  const variants = validItems.map(v => {
-    const variant = {
+  const variants = validItems
+    .filter(v => {
+      const price = Math.round((parseFloat(v.price) + margin) * 100) / 100;
+      return price > 0;
+    })
+    .map(v => {
+     const variant = {
       sku: v.sku,
       barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
       price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
@@ -450,8 +519,6 @@ function buildShopifyProductObject(group) {
     variant.normalizedOptions = normalizeOptions(variant.optionValues);
     return variant;
   });
-
-  console.log(`Variantes de ${title}:`, [...variants]);
 
   return {
     title,
@@ -474,6 +541,7 @@ function convertVariantForShopify(newVar, imageMap) {
     : null;
 
   return {
+    sku: newVar.sku,
     barcode,
     price: newVar.price,
     inventoryPolicy: "CONTINUE",
@@ -760,10 +828,13 @@ function findVariant(existingVariants, newVariant) {
   }
 
   if (newOptionsKey) {
-    const byOptions = existingVariants.find((ev) => {
-      const existingKey = buildOptionsKeyFromSelectedOptions(ev?.selectedOptions || []);
-      return existingKey && existingKey === newOptionsKey;
-    });
+    // const byOptions = existingVariants.find((ev) => {
+    //   const existingKey = buildOptionsKeyFromSelectedOptions(ev?.selectedOptions || []);
+    //   return existingKey && existingKey === newOptionsKey;
+    // });
+    const byOptions = existingVariants.find(ev =>
+      buildOptionsKeyFromSelectedOptions(ev?.selectedOptions || []) === newOptionsKey
+    );
     if (byOptions) return byOptions;
   }
 
@@ -853,9 +924,44 @@ async function getAllProductVariants(admin, productId) {
   return all;
 }
 
+const VARIANTS_DELETE = `#graphql
+  mutation productVariantsBulkDelete($productId: ID!, $variantsIds: [ID!]!) {
+    productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
+      product {
+        id
+        title
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 async function syncExistingProduct(admin, existing, productObj, groupId = null) {
+  log(`=========== 🔄 Sincronizando producto existente: ${existing.id} - ${productObj.title} ===========`);
   let created = 0;
   let updated = 0;
+
+  // --- 🌟 ORDENACIÓN ASCENDENTE DE CAPACIDADES 🌟 ---
+  if (productObj?.variants && productObj.variants.length > 1) {
+    const parseCapacityValue = (variant) => {
+      const capObj = variant.optionValues?.find(ov => ov.optionName.toLowerCase() === 'capacidad');
+      if (!capObj || !capObj.name) return 0;
+      
+      const text = String(capObj.name).toUpperCase().trim();
+      const num = parseFloat(text.replace(/[^0-9.]/g, '')) || 0;
+      
+      if (text.includes('TB')) {
+        return num * 1024; // Convertir TB a GB para comparar correctamente (1TB = 1024GB)
+      }
+      return num;
+    };
+
+    productObj.variants.sort((a, b) => parseCapacityValue(a) - parseCapacityValue(b));
+  }
+  // --- 🌟 FIN DE LA ORDENACIÓN 🌟 ---
 
   sendProgress({
     type: "variants-sync-start",
@@ -866,7 +972,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   let imageMap = {};
   let uploadedMediaNodes = [];
 
-  // If productObj has images, try to upload them (won't automatically link to variants here)
+  // Media upload logic
   if (productObj.images && productObj.images.length) {
     try {
       const media = productObj.images.map((img, i) => ({
@@ -893,7 +999,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
       });
 
       uploadedMediaNodes = newGetProductMediaRes;
-
       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
     } catch (err) {
       log(`⚠️ Error uploading media for new product:`, err);
@@ -904,20 +1009,28 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
-  // log(`Imagemap for product ${productObj.title}:`, { ...imageMap });
-
   const variantsToUpdate = [];
   const variantsToCreate = [];
 
   const productVariants = await getAllProductVariants(admin, existing.id);
 
+  const placeholderVariant = (
+    productVariants.length === 1 &&
+    !normalizeString(productVariants[0]?.sku) &&
+    !normalizeString(productVariants[0]?.barcode)
+  ) ? productVariants[0] : null;
+
+  let placeholderVariantAvailable = Boolean(placeholderVariant);
+
   log(`🔍 [syncExistingProduct] productId=${existing.id} → ${productVariants.length} variantes existentes en Shopify`);
-  if (productVariants.length > 0) {
-    log(`🔍 [syncExistingProduct] Claves Shopify:`, productVariants.map(ev => buildOptionsKeyFromSelectedOptions(ev.selectedOptions || [])));
-  }
 
   productVariants.forEach(v => {
+    v.normalizedSku = normalizeString(v.sku);
+    v.normalizedBarcode = normalizeString(v.barcode);
+    v.optionsKey = buildOptionsKeyFromSelectedOptions(v.selectedOptions || []);
     v.normalizedOptions = normalizeOptions(v.selectedOptions);
+
+    log(`   - Variante ID: ${v.id} | Price: ${v.price} | SKU: ${v.sku || 'N/A'} | Barcode: ${v.barcode || 'N/A'} | Opciones: ${v.selectedOptions?.map(so => `${so.name}:${so.value}`).join(", ")}`);
 
     const imgUrl = v?.image?.url || null;
     if (imgUrl) {
@@ -929,11 +1042,61 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     } else {
       v.currentMediaId = null;
     }
-  })
+  });
+
+  // ==========================================================================
+  // 🌟 MODIFICACIÓN AQUÍ: CONTROL DE PURGA SEGURO Y PROTECCIÓN DE PRODUCTO NUEVO 🌟
+  // ==========================================================================
+  
+  // 1. Creamos el conjunto de SKUs que vienen en el XML actual
+  const activeSkusInFeed = new Set(
+    productObj.variants.map(v => String(v.sku || "").trim().toLowerCase()).filter(Boolean)
+  );
+
+  // 2. Condición crucial: ¿Es un producto recién creado por el script que solo tiene la variante vacía por defecto de Shopify?
+  const isNewlyCreatedProduct = productVariants.length === 1 && !productVariants[0].sku;
+  const hasRealFeedSkus = productObj.variants.some(v => String(v.sku || "").trim().length > 0);
+  const shouldDeletePlaceholderVariant = isNewlyCreatedProduct && hasRealFeedSkus;
+
+  // 3. Si el producto es nuevo, el array de borrado se queda vacío para no bloquear a Shopify.
+  // Si ya existía, evalúa cuáles variantes tienen SKUs que ya no vienen en tu XML para eliminarlas.
+  const variantsToDelete = isNewlyCreatedProduct 
+    ? [] 
+    : productVariants
+        .filter(ev => {
+          const shopifySku = String(ev.sku || "").trim().toLowerCase();
+          if (!shopifySku) return shouldDeletePlaceholderVariant; // Si una variante vieja no tiene SKU, se purga
+          return !activeSkusInFeed.has(shopifySku);
+        })
+        .map(ev => String(ev.id));
+
+  // 4. Ejecución de la mutación de borrado masivo corregida
+  if (variantsToDelete.length > 0) {
+    log(`🗑️  [PURGA] ID: ${existing.id} | Removiendo ${variantsToDelete.length} variantes obsoletas.`);
+    
+    try {
+      await adminGraphql(admin, VARIANTS_DELETE, {
+        productId: existing.id,
+        variantsIds: variantsToDelete
+      });
+    } catch (e) {
+      log(`❌ [ERROR PURGA] ID: ${existing.id} — ${e.message || String(e)}`);
+    }
+  }
+  // ==========================================================================
+  // 🌟 FIN DE LA MODIFICACIÓN 🌟
+  // ==========================================================================
 
   groupsState[groupId].totalVariants += productObj.variants.length;
+  const matchedShopifyIds = new Set();
 
-  const matchedShopifyIds = new Set(); // evita procesar el mismo ID de Shopify dos veces
+  let skippedCount = 0;
+  let detectedUpdateCount = 0;
+  let detectedCreateCount = 0;
+
+  productObj.variants.forEach(variant => {
+    console.log(`   - SKU: ${variant.sku} | Price: ${variant.price} | Opciones: ${variant.optionValues.map(ov => `${ov.optionName}:${ov.name}`).join(", ")}`);
+  });
 
   // iterate variants
   for (const variant of productObj.variants) {
@@ -952,7 +1115,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
 
     if (variant.image) {
       const dimensions = await getImageDimensions(variant.image);
-
       if (isImageSmall(dimensions)) {
         sendProgress({
           type: "variant_image_too_small",
@@ -966,18 +1128,19 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
             color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
           }
-        })
+        });
       }
     }
 
     variant.mediaId = imageMap[variant.image] || null;
-    const match = findVariant(productVariants, variant);
-    const newKey = buildOptionsKeyFromOptionValues(variant.optionValues || []);
-    log(`🔍 [findVariant] sku=${variant.sku} key="${newKey}" → ${match ? 'ENCONTRADA id=' + match.id : 'NO ENCONTRADA → crear'}`);
+    let match = findVariant(productVariants, variant);
 
+    if (!match && placeholderVariantAvailable) {
+      match = placeholderVariant;
+      placeholderVariantAvailable = false;
+    }
+    
     if (match) {
-      // Si este ID de Shopify ya fue procesado por otro SKU del feed (mismo barcode/GTIN),
-      // omitirlo para evitar "Duplicated input value" en el bulk update
       if (matchedShopifyIds.has(match.id)) {
         sendProgress({
           type: "variant_processing_success",
@@ -992,7 +1155,10 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
           }
         });
+
+        skippedCount++;
         groupsState[groupId].processedVariants++;
+        
         if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
           sendProgress({
             type: groupsState[groupId].hasErrors ? "group_error" : "group_success",
@@ -1001,9 +1167,9 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         }
         continue;
       }
+
       matchedShopifyIds.add(match.id);
 
-      // Preparamos variante para actualización con opciones normalizadas
       const variantForUpdate = {
         ...variant,
         id: match.id,
@@ -1011,7 +1177,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
         normalizedOptions: variant.normalizedOptions
       };
 
-      // Evitar duplicados y detectar cambios reales
       if (
         variantNeedsUpdate(match, variantForUpdate) &&
         !isDuplicateVariant(variantsToUpdate, variantForUpdate)
@@ -1029,11 +1194,12 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
           }
         });
 
+        detectedUpdateCount++;
+
         variantsToUpdate.push(variantForUpdate);
         continue;
       }
     } else {
-      // Evitar crear duplicados en Shopify
       if (!isDuplicateVariant(variantsToCreate, variant)) {
         sendProgress({
           type: "variant_create_detected",
@@ -1048,6 +1214,14 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
           }
         });
 
+        const cleanPrice = parseFloat(variant.price);
+
+        if (!variant.price || isNaN(cleanPrice) || cleanPrice <= 0) {
+          log(`⚠️ [IGNORADO] Se bloqueó la variante SKU: ${variant.sku || 'Desconocido'} porque su precio es inválido (Precio: ${variant.price}). Revisar origen XML.`);
+          continue; // Salta esta variante y no la añade al array de creación
+        }
+
+        detectedCreateCount++;
         variantsToCreate.push(variant);
         continue;
       }
@@ -1077,63 +1251,64 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
+  // Secciones de Bulk Create y Bulk Update permanecen idénticas...
   if (variantsToCreate.length > 0) {
-    sendProgress({
-      step: "variants-batch-create",
-      productId: existing.id,
-      count: variantsToCreate.length,
-      groupId
-    });
+    variantsToCreate.forEach(v => {
+      log(`   ✅ - Variante a crear SKU: ${v.sku} | Price: ${v.price} | Opciones: ${v.optionValues.map(ov => `${ov.optionName}:${ov.name}`).join(", ")}\n`);
+    })
+    sendProgress({ step: "variants-batch-create", productId: existing.id, count: variantsToCreate.length, groupId });
 
     const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
-
     try {
-      const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
-        productId: existing.id,
-        variants: converted
-      });
+      const variantsCreateRes = await adminGraphql(
+        admin, 
+        VARIANTS_CREATE, 
+        { 
+          productId: existing.id, 
+          variants: converted.map(v => {
+            const { sku, ...rest } = v;
 
+            return {
+              ...rest,
+              inventoryItem: {
+                sku 
+              }
+            }
+          }) 
+        }
+      );
       const variantsData = await variantsCreateRes.json();
+
+      log(`✅ [POST-CREAR] Variantes inyectadas con éxito en Shopify.\n`);
+      if (variantsData?.data?.productVariantsBulkCreate?.productVariants) {
+        variantsData.data.productVariantsBulkCreate.productVariants.forEach(async pv => {
+
+          log(`   ✅ Creada en Shopify -> ID: ${pv.id} | Precio: ${pv.price || '0? (Revisar)'}\n`);
+        });
+      }
       const variantsCreateError = variantsData?.data?.productVariantsBulkCreate?.userErrors || [];
 
       if (variantsCreateError.length) {
         variantsCreateError.forEach((err, index) => {
-          const isDuplicate =
-            (err.message || "").toLowerCase().includes("duplicated input value") ||
-            (err.message || "").toLowerCase().includes("already exists") ||
-            (err.message || "").toLowerCase().includes("already been taken");
-
+          const isDuplicate = (err.message || "").toLowerCase().includes("duplicated input value") ||
+                              (err.message || "").toLowerCase().includes("already exists");
           if (isDuplicate) {
-            // La variante ya existe en Shopify pero no pudo ser detectada — omitir sin error
-            sendProgress({
-              type: "variant_processing_success",
-              groupId,
-              productId: existing.id,
-              action: "skipped",
-              variant: variantsToCreate[index] || null
-            });
+            sendProgress({ type: "variant_processing_success", groupId, productId: existing.id, action: "skipped", variant: variantsToCreate[index] || null });
           } else {
-            sendProgress({
+            sendProgress({ 
               type: "variant_processing_error",
               groupId,
               productId: existing.id,
               message: err.message || "Error creando variante",
               variant: variantsToCreate[index] || null
-            });
+            })
             groupsState[groupId].hasErrors = true;
           }
-
           groupsState[groupId].processedVariants++;
-
-          if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
-            sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
-          }
         });
       } else {
         created += variantsToCreate.length;
-
         for (const v of variantsToCreate) {
-          // log('✅ Variante creada:', { ...v });
           sendProgress({
             type: "variant_processing_success",
             groupId,
@@ -1147,29 +1322,7 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
               condition: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
             }
           });
-
           groupsState[groupId].processedVariants++;
-
-          // Si todas las variantes han finalizado
-          if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
-            if (groupsState[groupId].hasErrors) {
-              sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
-            } else {
-              const noChanges = created === 0 && updated === 0;
-
-              if (noChanges) {
-                sendProgress({
-                  type: "group_unchanged",
-                  id: groupId
-                });
-              } else {
-                sendProgress({
-                  type: "group_success",
-                  id: groupId
-                });
-              }
-            }
-          }
         }
       }
     } catch (err) {
@@ -1178,57 +1331,64 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
   }
 
   if (variantsToUpdate.length > 0) {
-    sendProgress({
-      type: "variants-batch-update",
-      productId: existing.id,
-      count: variantsToUpdate.length,
-      groupId
+    variantsToUpdate.forEach(v => {
+      log(`   🔍 - Variante a actualizar ID: ${v.id} | SKU: ${v.sku} | Price: ${v.price} | Opciones: ${v.optionValues.map(ov => `${ov.optionName}:${ov.name}`).join(", ")}\n`);
     });
 
+    sendProgress({ type: "variants-batch-update", productId: existing.id, count: variantsToUpdate.length, groupId });
+
     const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
-
-    // log(fr
-
+    
     try {
-      // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
-      const variantsUpdateRes = await adminGraphql(admin, VARIANTS_UPDATE, {
-        productId: existing.id,
-        variants: converted
-      });
+      const variantsUpdateRes = await adminGraphql(
+        admin, 
+        VARIANTS_UPDATE, 
+        { 
+          productId: existing.id, 
+          variants: converted.map(v => {
+            const { sku, ...rest } = v;
+
+            return {
+              ...rest,
+              inventoryItem: {
+                sku 
+              }
+            }
+          }) 
+        }
+      );
+
       const variantsUpdateData = await variantsUpdateRes.json();
+
+      log(`✅ [POST-ACTUALIZAR] Variantes modificadas con éxito en Shopify.`);
+      if (variantsUpdateData?.data?.productVariantsBulkUpdate?.productVariants) {
+        variantsUpdateData.data.productVariantsBulkUpdate.productVariants.forEach(async pv => {
+          log(`   ⚡ Actualizada en Shopify -> ID: ${pv.id} | SKU: ${pv.inventoryItem.sku} | Precio: ${pv.price}`);
+        });
+      }
+
       const variantsUpdateError = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors || [];
 
       if (variantsUpdateError.length) {
         variantsUpdateError.forEach((err, index) => {
-          const isAlreadyExists =
-            (err.message || "").toLowerCase().includes("duplicated input value") ||
-            (err.message || "").toLowerCase().includes("already exists") ||
-            (err.message || "").toLowerCase().includes("already been taken");
-
+          const isAlreadyExists = (err.message || "").toLowerCase().includes("duplicated input value") ||
+                                  (err.message || "").toLowerCase().includes("already exists");
           if (isAlreadyExists) {
-            sendProgress({
-              type: "variant_processing_success",
-              groupId,
-              productId: existing.id,
-              action: "skipped",
-              variant: variantsToUpdate[index] || null
-            });
+            sendProgress({ type: "variant_processing_success", groupId, productId: existing.id, action: "skipped", variant: variantsToUpdate[index] || null });
           } else {
-            sendProgress({
+            sendProgress({ 
               type: "variant_processing_error",
               groupId,
               productId: existing.id,
-              message: err.message || "Error actualizando variante",
+              message: err.message || "Error creando variante",
               variant: variantsToUpdate[index] || null
-            });
+            })
+            
             groupsState[groupId].hasErrors = true;
           }
         });
       } else {
-        // log('ImageMap used for updating variants:', { ...imageMap });
-
         for (const v of variantsToUpdate) {
-          // log('✅ Variante actualizada:', { ...v });
           sendProgress({
             type: "variant_processing_success",
             groupId,
@@ -1243,7 +1403,6 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
             }
           });
         }
-
         updated += converted.length;
       }
     } catch (err) {
@@ -1251,8 +1410,411 @@ async function syncExistingProduct(admin, existing, productObj, groupId = null) 
     }
   }
 
+  log(`📋 [PLAN] Producto: ${productObj.title.padEnd(25)} | Existentes: ${productVariants.length} | Mantener: ${matchedShopifyIds.size} | Crear: ${detectedCreateCount} | Actualizar: ${detectedUpdateCount} | Ignorar: ${skippedCount}`);
+
   return { created, updated, unchanged: created === 0 && updated === 0 };
 }
+
+// async function syncExistingProduct(admin, existing, productObj, groupId = null) {
+//   let created = 0;
+//   let updated = 0;
+
+//   sendProgress({
+//     type: "variants-sync-start",
+//     productId: existing.id,
+//     groupId
+//   });
+
+//   let imageMap = {};
+//   let uploadedMediaNodes = [];
+
+//   // If productObj has images, try to upload them (won't automatically link to variants here)
+//   if (productObj.images && productObj.images.length) {
+//     try {
+//       const media = productObj.images.map((img, i) => ({
+//         mediaContentType: "IMAGE",
+//         originalSource: img.originalSrc,
+//         alt: `${productObj.title} - ${i + 1}`
+//       }));
+
+//       await adminGraphql(admin, PRODUCT_CREATE_MEDIA, { media, product: { id: existing.id } });
+
+//       sendProgress({
+//         type: "product_media_uploaded",
+//         productId: existing.id,
+//         groupId,
+//         count: media.length
+//       });
+
+//       const newGetProductMediaRes = await getProductMediaWithRetry(admin, existing.id);
+
+//       sendProgress({
+//         type: "product_media_added",
+//         productId: existing.id,
+//         groupId
+//       });
+
+//       uploadedMediaNodes = newGetProductMediaRes;
+
+//       imageMap = buildImageMapByMatching(productObj, newGetProductMediaRes);
+//     } catch (err) {
+//       log(`⚠️ Error uploading media for new product:`, err);
+//       if (err.body?.errors) {
+//         log(`⚠️ Error uploading media for new product:`, err.body.errors);
+//         return ({ errors: err.body?.errors }, { status: 500 });
+//       }
+//     }
+//   }
+
+//   // log(`Imagemap for product ${productObj.title}:`, { ...imageMap });
+
+//   const variantsToUpdate = [];
+//   const variantsToCreate = [];
+
+//   const productVariants = await getAllProductVariants(admin, existing.id);
+
+//   log(`🔍 [syncExistingProduct] productId=${existing.id} → ${productVariants.length} variantes existentes en Shopify`);
+//   if (productVariants.length > 0) {
+//     log(`🔍 [syncExistingProduct] Claves Shopify:`, productVariants.map(ev => buildOptionsKeyFromSelectedOptions(ev.selectedOptions || [])));
+//   }
+
+//   productVariants.forEach(v => {
+//     v.normalizedOptions = normalizeOptions(v.selectedOptions);
+
+//     const imgUrl = v?.image?.url || null;
+//     if (imgUrl) {
+//       const base = extractBaseName(imgUrl);
+//       const foundMedia = uploadedMediaNodes.find(node =>
+//         node?.preview?.image?.url?.includes(base)
+//       );
+//       v.currentMediaId = foundMedia?.id || null;
+//     } else {
+//       v.currentMediaId = null;
+//     }
+//   })
+
+//   groupsState[groupId].totalVariants += productObj.variants.length;
+
+//   const matchedShopifyIds = new Set(); // evita procesar el mismo ID de Shopify dos veces
+
+//   // iterate variants
+//   for (const variant of productObj.variants) {
+//     sendProgress({
+//       type: "variant_processing_start",
+//       groupId,
+//       productId: existing.id,
+//       variant: {
+//         sku: variant.sku,
+//         image: variant.image,
+//         capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//         color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//         condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//       }
+//     });
+
+//     if (variant.image) {
+//       const dimensions = await getImageDimensions(variant.image);
+
+//       if (isImageSmall(dimensions)) {
+//         sendProgress({
+//           type: "variant_image_too_small",
+//           groupId,
+//           productId: existing.id,
+//           variant: {
+//             sku: variant.sku,
+//             image: variant.image,
+//             imageDimensions: dimensions,
+//             capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//             color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//           }
+//         })
+//       }
+//     }
+
+//     variant.mediaId = imageMap[variant.image] || null;
+//     const match = findVariant(productVariants, variant);
+//     const newKey = buildOptionsKeyFromOptionValues(variant.optionValues || []);
+//     log(`🔍 [findVariant] sku=${variant.sku} key="${newKey}" → ${match ? 'ENCONTRADA id=' + match.id : 'NO ENCONTRADA → crear'}`);
+
+//     if (match) {
+//       // Si este ID de Shopify ya fue procesado por otro SKU del feed (mismo barcode/GTIN),
+//       // omitirlo para evitar "Duplicated input value" en el bulk update
+//       if (matchedShopifyIds.has(match.id)) {
+//         sendProgress({
+//           type: "variant_processing_success",
+//           groupId,
+//           productId: existing.id,
+//           action: "skipped",
+//           variant: {
+//             sku: variant.sku,
+//             image: variant.image,
+//             capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//             color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//           }
+//         });
+//         groupsState[groupId].processedVariants++;
+//         if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+//           sendProgress({
+//             type: groupsState[groupId].hasErrors ? "group_error" : "group_success",
+//             id: groupId
+//           });
+//         }
+//         continue;
+//       }
+//       matchedShopifyIds.add(match.id);
+
+//       // Preparamos variante para actualización con opciones normalizadas
+//       const variantForUpdate = {
+//         ...variant,
+//         id: match.id,
+//         selectedOptions: variant.optionValues,
+//         normalizedOptions: variant.normalizedOptions
+//       };
+
+//       // Evitar duplicados y detectar cambios reales
+//       if (
+//         variantNeedsUpdate(match, variantForUpdate) &&
+//         !isDuplicateVariant(variantsToUpdate, variantForUpdate)
+//       ) {
+//         sendProgress({
+//           type: "variant_update_detected",
+//           groupId,
+//           productId: existing.id,
+//           variant: {
+//             sku: variant.sku,
+//             image: variant.image,
+//             capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//             color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//           }
+//         });
+
+//         variantsToUpdate.push(variantForUpdate);
+//         continue;
+//       }
+//     } else {
+//       // Evitar crear duplicados en Shopify
+//       if (!isDuplicateVariant(variantsToCreate, variant)) {
+//         sendProgress({
+//           type: "variant_create_detected",
+//           groupId,
+//           productId: existing.id,
+//           variant: {
+//             sku: variant.sku,
+//             image: variant.image,
+//             capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//             color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//             condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//           }
+//         });
+
+//         variantsToCreate.push(variant);
+//         continue;
+//       }
+//     }
+
+//     sendProgress({
+//       type: "variant_processing_success",
+//       groupId,
+//       productId: existing.id,
+//       action: "skipped",
+//       variant: {
+//         sku: variant.sku,
+//         image: variant.image,
+//         capacity: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//         color: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//         condition: variant.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//       }
+//     });
+
+//     groupsState[groupId].processedVariants++;
+
+//     if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+//       sendProgress({
+//         type: groupsState[groupId].hasErrors ? "group_error" : "group_success",
+//         id: groupId
+//       });
+//     }
+//   }
+
+//   if (variantsToCreate.length > 0) {
+//     sendProgress({
+//       step: "variants-batch-create",
+//       productId: existing.id,
+//       count: variantsToCreate.length,
+//       groupId
+//     });
+
+//     const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
+
+//     try {
+//       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
+//         productId: existing.id,
+//         variants: converted
+//       });
+
+//       const variantsData = await variantsCreateRes.json();
+//       const variantsCreateError = variantsData?.data?.productVariantsBulkCreate?.userErrors || [];
+
+//       if (variantsCreateError.length) {
+//         variantsCreateError.forEach((err, index) => {
+//           const isDuplicate =
+//             (err.message || "").toLowerCase().includes("duplicated input value") ||
+//             (err.message || "").toLowerCase().includes("already exists") ||
+//             (err.message || "").toLowerCase().includes("already been taken");
+
+//           if (isDuplicate) {
+//             // La variante ya existe en Shopify pero no pudo ser detectada — omitir sin error
+//             sendProgress({
+//               type: "variant_processing_success",
+//               groupId,
+//               productId: existing.id,
+//               action: "skipped",
+//               variant: variantsToCreate[index] || null
+//             });
+//           } else {
+//             sendProgress({
+//               type: "variant_processing_error",
+//               groupId,
+//               productId: existing.id,
+//               message: err.message || "Error creando variante",
+//               variant: variantsToCreate[index] || null
+//             });
+//             groupsState[groupId].hasErrors = true;
+//           }
+
+//           groupsState[groupId].processedVariants++;
+
+//           if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+//             sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
+//           }
+//         });
+//       } else {
+//         created += variantsToCreate.length;
+
+//         for (const v of variantsToCreate) {
+//           // log('✅ Variante creada:', { ...v });
+//           sendProgress({
+//             type: "variant_processing_success",
+//             groupId,
+//             productId: existing.id,
+//             action: "created",
+//             variant: {
+//               sku: v.sku,
+//               image: v.image,
+//               capacity: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//               color: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//               condition: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//             }
+//           });
+
+//           groupsState[groupId].processedVariants++;
+
+//           // Si todas las variantes han finalizado
+//           if (groupsState[groupId].processedVariants === groupsState[groupId].totalVariants) {
+//             if (groupsState[groupId].hasErrors) {
+//               sendProgress({ type: "group_error", id: groupId, error: "Variantes con error" });
+//             } else {
+//               const noChanges = created === 0 && updated === 0;
+
+//               if (noChanges) {
+//                 sendProgress({
+//                   type: "group_unchanged",
+//                   id: groupId
+//                 });
+//               } else {
+//                 sendProgress({
+//                   type: "group_success",
+//                   id: groupId
+//                 });
+//               }
+//             }
+//           }
+//         }
+//       }
+//     } catch (err) {
+//       log("⚠️ Error creating variants:", err);
+//     }
+//   }
+
+//   if (variantsToUpdate.length > 0) {
+//     sendProgress({
+//       type: "variants-batch-update",
+//       productId: existing.id,
+//       count: variantsToUpdate.length,
+//       groupId
+//     });
+
+//     const converted = variantsToUpdate.map(v => ({ id: v.id, ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
+
+//     // log(fr
+
+//     try {
+//       // const resUpdate = await processVariantBatches(admin, existing.id, converted, true);
+//       const variantsUpdateRes = await adminGraphql(admin, VARIANTS_UPDATE, {
+//         productId: existing.id,
+//         variants: converted
+//       });
+//       const variantsUpdateData = await variantsUpdateRes.json();
+//       const variantsUpdateError = variantsUpdateData?.data?.productVariantsBulkUpdate?.userErrors || [];
+
+//       if (variantsUpdateError.length) {
+//         variantsUpdateError.forEach((err, index) => {
+//           const isAlreadyExists =
+//             (err.message || "").toLowerCase().includes("duplicated input value") ||
+//             (err.message || "").toLowerCase().includes("already exists") ||
+//             (err.message || "").toLowerCase().includes("already been taken");
+
+//           if (isAlreadyExists) {
+//             sendProgress({
+//               type: "variant_processing_success",
+//               groupId,
+//               productId: existing.id,
+//               action: "skipped",
+//               variant: variantsToUpdate[index] || null
+//             });
+//           } else {
+//             sendProgress({
+//               type: "variant_processing_error",
+//               groupId,
+//               productId: existing.id,
+//               message: err.message || "Error actualizando variante",
+//               variant: variantsToUpdate[index] || null
+//             });
+//             groupsState[groupId].hasErrors = true;
+//           }
+//         });
+//       } else {
+//         // log('ImageMap used for updating variants:', { ...imageMap });
+
+//         for (const v of variantsToUpdate) {
+//           // log('✅ Variante actualizada:', { ...v });
+//           sendProgress({
+//             type: "variant_processing_success",
+//             groupId,
+//             productId: existing.id,
+//             action: "updated",
+//             variant: {
+//               sku: v.sku,
+//               image: v.image,
+//               capacity: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'capacidad')?.name || '',
+//               color: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'color')?.name || '',
+//               condition: v.optionValues.find(ov => ov.optionName.toLowerCase() === 'condición')?.name || ''
+//             }
+//           });
+//         }
+
+//         updated += converted.length;
+//       }
+//     } catch (err) {
+//       log("⚠️ Error updating variants:", err);
+//     }
+//   }
+
+//   return { created, updated, unchanged: created === 0 && updated === 0 };
+// }
 
 async function getImageDimensions(imageUrl) {
   try {
@@ -1362,8 +1924,13 @@ async function processGroup(admin, groupId, groupItems) {
   const existing = await findExistingProduct(admin, groupItems);
 
   if (!existing) {
-    log("🟢 Creating product:", productObj.title);
+    log(`=========== 🚀 Creando producto: ${productObj.title} ===========`);
 
+
+    log(`=========== VAMOS A VER PRIMERO SUS VARIANTES ===========`);
+    productObj.variants.forEach(v => {
+      log(`   🔍 Variante detectada ID: ${v.id} | SKU: ${v.sku} | Price: ${v.price} | Opciones: ${v.optionValues.map(ov => `${ov.optionName}:${ov.name}`).join(", ")}\n`);
+    })
     try {
       const { success, product, errors } = await createShopifyProduct(admin, productObj, groupId);
 
@@ -1456,6 +2023,7 @@ export async function syncXmlString(admin, xmlString) {
 
     const results = {};
     let processedGroups = 0;
+    log(`🚀 Iniciando sincronización de ${Object.keys(groups).length} grupos de productos.`);
 
     for (const [groupId, groupItems] of Object.entries(groups)) {
       if (wasCancelled()) break;
@@ -1483,6 +2051,8 @@ export async function syncXmlString(admin, xmlString) {
 
         processedGroups++;
 
+        log(`📊 Progreso: ${processedGroups}/${Object.keys(groups).length} grupos completados.`);
+
         sendProgress({
           type: "overall_status",
           processed: processedGroups,
@@ -1490,7 +2060,7 @@ export async function syncXmlString(admin, xmlString) {
         });
 
       } catch (err) {
-        log("❌ Error processing group", groupId, err);
+        log(`❌ Error en Grupo [${groupId}]: ${err?.message || String(err)}`);
         results[groupId] = { success: false, error: err?.message || String(err) };
 
         sendProgress({
@@ -1501,11 +2071,13 @@ export async function syncXmlString(admin, xmlString) {
       }
     }
 
-    !wasCancelled()
-      ? sendProgress({ type: "sync-end", results })
-      : sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
-
-    log(wasCancelled() ? "🛑 sync cancelled" : "✅ sync finished");
+    if (wasCancelled()) {
+      log("🛑 Sincronización cancelada por el usuario.");
+      sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
+    } else {
+      log("✨ Sincronización finalizada con éxito.");
+      sendProgress({ type: "sync-end", results });
+    }
   } catch (err) {
     log("❌ syncXmlString error:", err);
     sendProgress({ step: "sync-error", error: err?.message || String(err) });

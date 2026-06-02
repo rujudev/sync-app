@@ -632,7 +632,6 @@ export default function Index() {
     es.addEventListener("variant_processing_success", e => {
       const d = JSON.parse(e.data);
 
-
       setVariantStatusByGroup(prev => ({
         ...prev,
         [d.groupId]: {
@@ -660,12 +659,11 @@ export default function Index() {
     es.addEventListener("variant_processing_error", e => {
       const d = JSON.parse(e.data);
 
-
       setVariantStatusByGroup(prev => ({
         ...prev,
         [d.groupId]: {
           ...(prev[d.groupId] || {}),
-          [d.variant.sku || `error-${Date.now()}`]: {
+          [d.variant?.sku || `error-${Date.now()}`]: {
             status: "error",
             message: d.message
           }
@@ -820,7 +818,7 @@ export default function Index() {
               <s-stack rowGap="large-100">
                 <s-stack direction="inline" columnGap="large">
                   <s-text variant="heading-sm" fontWeight="semibold">
-                    🚀 Procesamiento en Tiempo Real
+                    🚀 Procesamiento en Tiempo Real Real
                   </s-text>
                   <s-badge
                     tone={syncState?.status === 'completed' ? 'success' : 'info'}

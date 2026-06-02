@@ -8,6 +8,24 @@ function pickBestCapacityFromMatches(matches) {
   return matches.reduce((a, b) => (a.valueGB >= b.valueGB ? a : b));
 }
 
+export function extractColorFromTitle(title = "") {
+  if (!title) return null;
+  
+  // Captura lo dentro del último paréntesis: (Blanco), (Azul), etc.
+  const match = title.match(/\(([^)]+)\)\s*$/);
+  
+  if (!match || !match[1]) return null;
+  
+  const colorText = match[1].trim();
+  
+  // Validar que no sea un modelo (ej: "A127F", "SM-721B", etc.)
+  const isModelNumber = /^[A-Z0-9\-]+$/.test(colorText);
+  if (isModelNumber) return null;
+  
+  // Normalizar: "Azul Oscuro" → "azul oscuro"
+  return colorText.toLowerCase();
+}
+
 export function extractCapacityFromString(s = "") {
   if (!s) return null;
   const matches = [];
@@ -57,4 +75,4 @@ export function extractCapacity({ title = "", sku = "", image = "", description 
   return null;
 }
 
-export default { extractCapacityFromString, extractCapacity };
+export default { extractCapacityFromString, extractCapacity, extractColorFromTitle };

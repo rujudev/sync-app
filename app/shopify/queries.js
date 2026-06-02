@@ -142,6 +142,7 @@ export const VARIANTS_CREATE = `
             productVariants {
                 id
                 title
+                price
                 selectedOptions {
                     name
                     value
@@ -176,10 +177,42 @@ export const VARIANTS_UPDATE = `
       productVariants {
         id
         title
+        price
+        inventoryItem {
+          id
+          sku
+        }
         selectedOptions {
           name
           value
         }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+export const GET_INVENTORY_ITEM = `
+  query inventoryItem($id: ID!) {
+    productVariant(id: $id) {
+      id
+      sku
+      inventoryItem {
+        id
+        sku
+      }
+    }
+  }`;
+
+export const SET_INVENTORY_ITEM = `
+  mutation inventoryItemUpdate($id: ID!, $input: InventoryItemInput!) {
+    inventoryItemUpdate(id: $id, input: $input) {
+      inventoryItem {
+        id
+        sku
       }
       userErrors {
         field
