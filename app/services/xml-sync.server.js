@@ -677,6 +677,7 @@ async function createShopifyProduct(admin, productObj, groupId = null) {
       product: {
         title: input.title,
         vendor: input.vendor,
+        productType: "Móvil",
         descriptionHtml: removeYouTubeTags(input.descriptionHtml),
         handle: input.handle,
         tags: input.tags,
