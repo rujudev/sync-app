@@ -23,5 +23,7 @@ export const FORBIDDEN_MODEL_WORDS = [
   "epi",
   "hazel",
   "bay",
-  "ice"
+  "ice",
+  "crush",
+  "prism"
 ];

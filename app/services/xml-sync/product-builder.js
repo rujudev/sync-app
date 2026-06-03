@@ -1,0 +1,262 @@
+// product-builder.js
+// Transforma grupos de items del feed en objetos de producto/variante listos
+// para enviar a la API de Shopify. No realiza llamadas async ni I/O.
+
+import { normalizeString, normalizeBrand, uniqStrings, isUsableIdentifier, normalizeTextField, normalizeTags, removeYouTubeTags } from '../../../utils/normalize-utils.js';
+import { pickGroupDescription } from './feed-normalizer.js';
+
+// ─── Aviso legal que se añade a productos reacondicionados/usados ───
+const REFURBISHED_LEGAL_NOTICE_HTML = `
+<h6>Información legal y garantía</h6>
+<p><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
+<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/20212</p>
+<p><strong>1 año de garantía.</strong></p>
+<p>Canon digital: <strong>3,25 €</strong> (incluido en el precio)</p>
+`;
+
+export function buildDescriptionHtml(baseDescription = "", conditions = []) {
+  const hasRefurbished = conditions.some(c => ["refurbished", "used"].includes(String(c).toLowerCase()));
+  const cleanBase = baseDescription || "";
+  if (!hasRefurbished) return cleanBase;
+  return cleanBase
+    ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML}`
+    : REFURBISHED_LEGAL_NOTICE_HTML;
+}
+
+// Ordena capacidades numéricamente (GB < TB).
+export function sortCapacities(a, b) {
+  const parse = (str) => {
+    const num = parseFloat(str);
+    if (isNaN(num)) return 0;
+    return /TB|TERA/i.test(str) ? num * 1024 : num;
+  };
+  return parse(a) - parse(b);
+}
+
+// Normaliza un array de optionValues para comparación canónica.
+export function normalizeOptions(arr = []) {
+  return arr
+    .map(opt => ({
+      name: (opt.name || opt.optionName || "").trim().toLowerCase(),
+      value: (opt.value || opt.name || "").trim().toLowerCase()
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Construye la clave de opciones desde selectedOptions de Shopify.
+export function buildOptionsKeyFromSelectedOptions(selectedOptions = []) {
+  return selectedOptions
+    .map((opt) => ({ name: normalizeString(opt?.name), value: normalizeString(opt?.value) }))
+    .filter((x) => x.name && x.value)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((x) => `${x.name}:${x.value}`)
+    .join("|");
+}
+
+// Construye la clave de opciones desde optionValues del feed.
+export function buildOptionsKeyFromOptionValues(optionValues = []) {
+  return optionValues
+    .map((opt) => ({ name: normalizeString(opt?.optionName), value: normalizeString(opt?.name) }))
+    .filter((x) => x.name && x.value)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((x) => `${x.name}:${x.value}`)
+    .join("|");
+}
+
+// Detecta si una variante del feed ya existe en una lista (por opciones).
+export function isDuplicateVariant(existing, variant) {
+  const incomingKey = buildOptionsKeyFromOptionValues(variant?.optionValues || []);
+  if (!incomingKey) return false;
+  return existing.some((ev) => {
+    const existingKey = ev?.selectedOptions
+      ? buildOptionsKeyFromSelectedOptions(ev.selectedOptions)
+      : buildOptionsKeyFromOptionValues(ev?.optionValues || []);
+    return existingKey === incomingKey;
+  });
+}
+
+// Busca una variante existente de Shopify por SKU, barcode u opciones.
+export function findVariant(existingVariants, newVariant) {
+  const newSku = normalizeString(newVariant?.sku);
+  const newBarcode = normalizeString(newVariant?.barcode);
+  const newOptionsKey = buildOptionsKeyFromOptionValues(newVariant?.optionValues || []);
+
+  if (isUsableIdentifier(newSku)) {
+    const bySku = existingVariants.find((ev) => normalizeString(ev?.sku) === newSku);
+    if (bySku) return bySku;
+  }
+
+  if (isUsableIdentifier(newBarcode)) {
+    const byBarcode = existingVariants.find((ev) => normalizeString(ev?.barcode) === newBarcode);
+    if (byBarcode) return byBarcode;
+  }
+
+  if (newOptionsKey) {
+    const byOptions = existingVariants.find(ev =>
+      buildOptionsKeyFromSelectedOptions(ev?.selectedOptions || []) === newOptionsKey
+    );
+    if (byOptions) return byOptions;
+  }
+
+  return null;
+}
+
+// Determina si una variante existente necesita ser actualizada.
+export function variantNeedsUpdate(existingVar, newVar) {
+  const norm = s => String(s || "").trim().toLowerCase();
+  if (Number(existingVar.price) !== Number(newVar.price)) return true;
+  if (norm(existingVar.barcode) !== norm(newVar.barcode)) return true;
+  if ((existingVar.currentMediaId || null) !== (newVar.mediaId || null)) return true;
+  const key = v => JSON.stringify(v.normalizedOptions);
+  return key(existingVar) !== key(newVar);
+}
+
+// Calcula qué campos del producto han cambiado respecto al estado en Shopify.
+export function computeProductUpdate(existingProduct, desiredProduct) {
+  const product = { id: existingProduct.id };
+  const changedFields = [];
+
+  if (normalizeTextField(existingProduct?.title) !== normalizeTextField(desiredProduct?.title)) {
+    product.title = desiredProduct.title;
+    changedFields.push("title");
+  }
+  if (normalizeTextField(existingProduct?.vendor) !== normalizeTextField(desiredProduct?.vendor)) {
+    product.vendor = desiredProduct.vendor;
+    changedFields.push("vendor");
+  }
+  if (normalizeTextField(existingProduct?.descriptionHtml) !== normalizeTextField(desiredProduct?.descriptionHtml)) {
+    product.descriptionHtml = desiredProduct.descriptionHtml;
+    changedFields.push("descriptionHtml");
+  }
+
+  const existingTags = normalizeTags(existingProduct?.tags || []);
+  const desiredTags = normalizeTags(desiredProduct?.tags || []);
+  if (JSON.stringify(existingTags) !== JSON.stringify(desiredTags)) {
+    product.tags = desiredProduct.tags || [];
+    changedFields.push("tags");
+  }
+
+  return { product, changedFields };
+}
+
+// ── CAMBIO 9 ── No enviar mediaId: null al payload de la mutación.
+// Cuando imageMap no tiene entrada para la imagen de la variante
+// (por fallo de matching o timeout de Shopify), enviar mediaId: null
+// hace que Shopify desvincule la imagen que ya tuviera esa variante,
+// dejándola sin foto aunque la imagen exista en el producto.
+// Solución: omitir el campo mediaId completamente si no tenemos un ID
+// válido. Shopify conserva la imagen anterior si el campo no se envía.
+export function convertVariantForShopify(newVar, imageMap) {
+  const barcode = isUsableIdentifier(newVar?.barcode)
+    ? String(newVar.barcode).trim()
+    : null;
+
+  const resolvedMediaId = imageMap[newVar.image] || null;
+
+  return {
+    sku: newVar.sku,
+    barcode,
+    price: newVar.price,
+    inventoryPolicy: "CONTINUE",
+    optionValues: (newVar.optionValues || []).map(ov => ({
+      optionName: ov.optionName,
+      name: ov.name
+    })),
+    ...(resolvedMediaId ? { mediaId: resolvedMediaId } : {})
+  };
+}
+
+// Elimina campos internos antes de enviar una variante a GraphQL.
+export function sanitizeVariantForGraphQL(v) {
+  const { normalizedOptions, currentMediaId, image, ...clean } = v;
+  return clean;
+}
+
+// Construye el objeto de producto completo para la API de Shopify a partir
+// de un grupo de items del feed.
+export function buildShopifyProductObject(group) {
+  const base = group[0];
+  const normalizedBrand = normalizeBrand(base.brand);
+  const so = normalizedBrand === 'apple' ? 'iOS' : 'Android';
+
+  const PRICE_MARGIN = { apple: 70, default: 60 };
+  const CONDITION = { new: "nuevo", refurbished: "reacondicionado", used: "usado" };
+  const CONDITION_ES = { new: "nuevo", refurbished: "reacondicionado", used: "usado" };
+
+  const margin = normalizedBrand === 'apple' ? PRICE_MARGIN.apple : PRICE_MARGIN.default;
+  const title = base.modelTitle;
+
+  const filteredItems = group.filter(v => {
+    const price = Number(v.price) || 0;
+    const minPrice = so === 'iOS' ? 219 : 180;
+    const capacity = String(v.capacity || "").toUpperCase().replace(/\s+/g, "");
+    const is64 = /^64(?:GB)?$/i.test(capacity);
+    return price > minPrice && !is64;
+  });
+
+  // ── CAMBIO 3 ── Deduplicar variantes con idéntica combinación de
+  // capacity + color + condition antes de construir el producto.
+  // Al agrupar por modelKey (CAMBIO 2), un mismo modelo puede tener
+  // varios SKUs con exactas mismas opciones (unidades físicas distintas
+  // del proveedor). Shopify rechaza esto con "Duplicated input value".
+  // Nos quedamos con el SKU de mayor precio dentro de cada combinación.
+  const seenCombos = new Map();
+  for (const v of filteredItems) {
+    const combo = `${v.capacity}|${v.color}|${v.condition}`;
+    if (!seenCombos.has(combo) || v.price > seenCombos.get(combo).price) {
+      seenCombos.set(combo, v);
+    }
+  }
+
+  const hasAnyCapacity = filteredItems.some(v => v.capacity);
+  const validItems = Array.from(seenCombos.values())
+    .filter(v => !hasAnyCapacity || v.capacity);
+
+  const capacities = uniqStrings(validItems.map(v => v.capacity)).filter(Boolean).sort(sortCapacities);
+  const colors = uniqStrings(validItems.map(v => v.color));
+  const conditions = uniqStrings(validItems.map(v => v.condition));
+  const description = pickGroupDescription(validItems);
+
+  const tags = uniqStrings([
+    normalizedBrand,
+    so.toLowerCase(),
+    'cosladafon',
+    normalizeString(base.modelKey),
+    ...conditions.map(c => CONDITION_ES[normalizeString(c)] || normalizeString(c))
+  ]);
+
+  const images = uniqStrings(validItems.map(v => v.image)).map(src => ({ originalSrc: src }));
+
+  const variants = validItems
+    .filter(v => Math.round((parseFloat(v.price) + margin) * 100) / 100 > 0)
+    .map(v => {
+      const variant = {
+        sku: v.sku,
+        barcode: isUsableIdentifier(v.gtin) ? String(v.gtin).trim() : null,
+        price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
+        inventoryPolicy: "CONTINUE",
+        optionValues: [
+          { optionName: "Capacidad", name: v.capacity },
+          { optionName: "Color", name: v.color },
+          { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
+        ],
+        image: v.image || null
+      };
+      variant.normalizedOptions = normalizeOptions(variant.optionValues);
+      return variant;
+    });
+
+  return {
+    title,
+    tags,
+    vendor: "SecondTech",
+    descriptionHtml: buildDescriptionHtml(description, conditions),
+    productOptions: [
+      { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
+      { name: "Color", values: colors.map(c => ({ name: c })) },
+      { name: "Condición", values: conditions.map(c => ({ name: CONDITION[c] || c })) }
+    ],
+    images,
+    variants
+  };
+}
