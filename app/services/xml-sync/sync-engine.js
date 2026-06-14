@@ -228,20 +228,25 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
   // Solución: calcular qué hay que borrar ahora (antes de modificar nada),
   // pero ejecutar el DELETE solo después de que las variantes reales ya
   // existan en Shopify. Así el producto nunca queda sin variantes.
-  const variantsToDelete = productVariants
-    .filter(ev => {
-      // Excluir siempre la variante Title/Default Title — la elimina Shopify
-      // automáticamente con REMOVE_STANDALONE_VARIANT al crear variantes reales.
-      if (isTitleVariant(ev)) return false;
+  // Set mutable: se eliminan los IDs a medida que el bucle de clasificación
+  // encuentra matches, para que la purga no borre variantes que el feed reclamó
+  // (aunque sea via barcode u opciones con un SKU distinto).
+  const variantsToDeleteSet = new Set(
+    productVariants
+      .filter(ev => {
+        // Excluir siempre la variante Title/Default Title — la elimina Shopify
+        // automáticamente con REMOVE_STANDALONE_VARIANT al crear variantes reales.
+        if (isTitleVariant(ev)) return false;
 
-      const shopifySku = String(ev.sku || "").trim().toLowerCase();
+        const shopifySku = String(ev.sku || "").trim().toLowerCase();
 
-      if (shopifySku) return !activeSkusInFeed.has(shopifySku);
+        if (shopifySku) return !activeSkusInFeed.has(shopifySku);
 
-      const evOptionsKey = buildOptionsKeyFromSelectedOptions(ev.selectedOptions || []);
-      return !activeFeedOptionsKeys.has(evOptionsKey);
-    })
-    .map(ev => String(ev.id));
+        const evOptionsKey = buildOptionsKeyFromSelectedOptions(ev.selectedOptions || []);
+        return !activeFeedOptionsKeys.has(evOptionsKey);
+      })
+      .map(ev => String(ev.id))
+  );
 
   groupsState[groupId].totalVariants += productObj.variants.length;
   const matchedShopifyIds = new Set();
@@ -309,6 +314,17 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
       match = null;
     }
 
+    // Cuando una variante del feed reclama una variante de Shopify (por SKU,
+    // barcode u opciones), sacarla de la lista de purga aunque su SKU antiguo
+    // no estuviera en activeSkusInFeed. Sin esto, el flujo era:
+    //   1. findVariant → match por opciones (SKU distinto en Shopify)
+    //   2. no_changes/update → skip o actualización correcta
+    //   3. purga borra esa misma variante porque su SKU original no era activo
+    //   → la variante desaparece del panel aunque el sync la "vio"
+    if (match) {
+      variantsToDeleteSet.delete(match.id);
+    }
+
     if (match) {
       if (matchedShopifyIds.has(match.id)) {
         logger.skip(`⏭️ [SKIP/duplicate_match] SKU ${variant.sku}: variante Shopify (${match.id}) ya procesada por otro SKU del feed.`);
@@ -372,6 +388,14 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
     sendProgress({ type: "variants-batch-create", productId: existing.id, count: variantsToCreate.length, groupId });
 
     const converted = variantsToCreate.map(v => ({ ...sanitizeVariantForGraphQL(convertVariantForShopify(v, imageMap)) }));
+
+    // Usar REMOVE_STANDALONE_VARIANT SOLO si el producto únicamente tiene
+    // el placeholder "Title/Default Title". Si ya tiene variantes reales,
+    // Shopify trata la única variante existente como "standalone" y la
+    // elimina al crear una nueva — borrando variantes legítimas.
+    const hasOnlyPlaceholder = productVariants.length > 0 && productVariants.every(isTitleVariant);
+    logger.info(`ℹ️ [VARIANTS_CREATE] hasOnlyPlaceholder=${hasOnlyPlaceholder} (${productVariants.length} variantes en Shopify, ${variantsToCreate.length} a crear)`);
+
     try {
       const variantsCreateRes = await adminGraphql(admin, VARIANTS_CREATE, {
         productId: existing.id,
@@ -379,13 +403,7 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
           const { sku, ...rest } = v;
           return { ...rest, inventoryItem: { sku } };
         }),
-        // ── NUEVO ── REMOVE_STANDALONE_VARIANT le indica a Shopify que elimine
-        // automáticamente la variante placeholder "Default Title" al crear la
-        // primera variante real. Esto evita el error "Option does not exist"
-        // que ocurría cuando el producto aún tenía la opción genérica "Title"
-        // en lugar de las opciones reales Capacidad/Color/Condición, sin
-        // necesidad de gestionar manualmente la eliminación de la placeholder.
-        strategy: "REMOVE_STANDALONE_VARIANT"
+        ...(hasOnlyPlaceholder ? { strategy: "REMOVE_STANDALONE_VARIANT" } : {})
       });
       const variantsData = await variantsCreateRes.json();
 
@@ -486,15 +504,43 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
   // ── PURGA ── Ejecutar aquí, después de crear y actualizar variantes.
   // Las variantes nuevas ya existen en Shopify en este punto, así que
   // el producto nunca queda sin variantes durante el proceso.
-  if (variantsToDelete.length > 0) {
-    logger.warn(`🗑️ [PURGA] ID: ${existing.id} | Eliminando ${variantsToDelete.length} variantes obsoletas.`);
+  if (variantsToDeleteSet.size > 0) {
+    const variantsBeingDeleted = productVariants
+      .filter(v => variantsToDeleteSet.has(String(v.id)))
+      .map(v => ({
+        id: v.id,
+        sku: v.sku || null,
+        options: (v.selectedOptions || []).map(so => ({ name: so.name, value: so.value }))
+      }));
+
+    variantsBeingDeleted.forEach(v =>
+      logger.warn(`🗑️ [PURGA] Eliminando — SKU: ${v.sku || 'N/A'} | Opciones: ${v.options.map(o => `${o.name}:${o.value}`).join(', ')}`)
+    );
+
+    sendProgress({
+      type: "variants_purged",
+      groupId,
+      productId: existing.id,
+      variants: variantsBeingDeleted
+    });
+
     try {
-      await adminGraphql(admin, VARIANTS_DELETE, {
+      const deleteRes = await adminGraphql(admin, VARIANTS_DELETE, {
         productId: existing.id,
-        variantsIds: variantsToDelete
+        variantsIds: Array.from(variantsToDeleteSet)
       });
+      const deleteData = await deleteRes.json();
+      const deleteErrors = deleteData?.data?.productVariantsBulkDelete?.userErrors || [];
+
+      if (deleteErrors.length) {
+        logger.error(`❌ [ERROR PURGA] ID: ${existing.id}:`, deleteErrors);
+        sendProgress({ type: "variants_purge_error", groupId, productId: existing.id, errors: deleteErrors });
+      } else {
+        logger.warn(`✅ [PURGA] ${variantsBeingDeleted.length} variante(s) eliminadas del producto ${existing.id}`);
+      }
     } catch (e) {
       logger.error(`❌ [ERROR PURGA] ID: ${existing.id} — ${e.message || String(e)}`);
+      sendProgress({ type: "variants_purge_error", groupId, productId: existing.id, errors: [{ message: e.message || String(e) }] });
     }
   }
 
@@ -515,13 +561,20 @@ export async function syncExistingProduct(admin, existing, productObj, groupId =
 async function processGroup(admin, groupId, groupItems) {
   const publicationsRes = await adminGraphql(admin, GET_PUBLICATIONS);
   const publicationsData = await publicationsRes.json();
-  const publicationsIDs = publicationsData?.data?.publications?.edges
+  const allPublications = publicationsData?.data?.publications?.edges || [];
+  const publicationsIDs = allPublications
     .filter(pub =>
       pub.node.name === 'Tienda Online' ||
       pub.node.name === 'Online Store' ||
       pub.node.name === 'Shop' ||
       pub.node.name === 'Shopify GraphiQL App'
     ).map(pub => ({ publicationId: pub.node.id })) || [];
+
+  if (publicationsIDs.length === 0) {
+    logger.warn(`⚠️ [PUBLICACIÓN] No se encontró ningún canal de ventas conocido. Canales disponibles: ${allPublications.map(e => `"${e.node.name}"`).join(', ')}. El producto quedará en Draft.`);
+  } else {
+    logger.detail(`[PUBLICACIÓN] Publicando en ${publicationsIDs.length} canal(es).`);
+  }
 
   const productObj = buildShopifyProductObject(groupItems);
 

@@ -245,13 +245,14 @@ export default function Index() {
     .filter(g => g.status !== "pending").slice((page - 1) * pageSize, page * pageSize);
 
   const groupStatusTotals = useMemo(() => {
-    let created = 0, updated = 0, skipped = 0, errors = 0;
+    let created = 0, updated = 0, skipped = 0, errors = 0, deleted = 0;
 
     for (const g of groupStatus) {
       created += g.created || 0;
       updated += g.updated || 0;
       skipped += g.skipped || 0;
       errors += g.errors || 0;
+      deleted += g.deleted || 0;
     }
 
     return {
@@ -259,6 +260,7 @@ export default function Index() {
       updated,
       skipped,
       errors,
+      deleted,
       totalProcessedProducts: created + updated + skipped + errors
     };
   }, [groupStatus])
@@ -339,6 +341,7 @@ export default function Index() {
             updated: 0,
             skipped: 0,
             errors: 0,
+            deleted: 0,
             productChangedFields: [],
             productNoChanges: false
           } : g
@@ -682,6 +685,36 @@ export default function Index() {
       )
     });
 
+    es.addEventListener("variants_purged", e => {
+      const d = JSON.parse(e.data);
+
+      // Registrar cada variante eliminada en variantStatusByGroup
+      setVariantStatusByGroup(prev => {
+        const groupVariants = { ...(prev[d.groupId] || {}) };
+        for (const v of (d.variants || [])) {
+          const key = v.sku || v.id;
+          const capacity = v.options?.find(o => o.name?.toLowerCase() === 'capacidad')?.value || '';
+          const color = v.options?.find(o => o.name?.toLowerCase() === 'color')?.value || '';
+          const condition = v.options?.find(o => o.name?.toLowerCase() === 'condición')?.value || '';
+          groupVariants[key] = {
+            status: "deleted",
+            action: "deleted",
+            variant: { sku: v.sku, capacity, color, condition }
+          };
+        }
+        return { ...prev, [d.groupId]: groupVariants };
+      });
+
+      // Actualizar el contador de eliminadas en el grupo
+      setGroupStatus(prev =>
+        prev.map(g =>
+          g.id === d.groupId
+            ? { ...g, deleted: (g.deleted || 0) + (d.variants?.length || 0) }
+            : g
+        )
+      );
+    });
+
     es.addEventListener("sync-end", () => {
       setSyncState(prev => ({
         ...prev,
@@ -889,6 +922,18 @@ export default function Index() {
                     </s-stack>
                   </s-box>
 
+                  {/* ELIMINADAS */}
+                  <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
+                    <s-stack rowGap="large" justifyContent="center" alignItems="center">
+                      <s-text variant="heading-lg" fontWeight="bold" tone="critical">
+                        {groupStatusTotals.deleted}
+                      </s-text>
+                      <s-badge tone="critical" size="small">
+                        🗑️ Eliminadas
+                      </s-badge>
+                    </s-stack>
+                  </s-box>
+
                   {/* ERRORES */}
                   <s-box background="subdued" border="base" borderRadius="base" borderColor="base" padding="large">
                     <s-stack rowGap="large" justifyContent="center" alignItems="center">
@@ -1079,6 +1124,7 @@ export default function Index() {
                             <s-badge tone="success" size="small">🆕 Creadas {g.created || 0}</s-badge>
                             <s-badge tone="info" size="small">🔄 Actualizadas {g.updated || 0}</s-badge>
                             <s-badge tone="warning" size="small">⏭️ Omitidas {g.skipped || 0}</s-badge>
+                            {(g.deleted || 0) > 0 && <s-badge tone="critical" size="small">🗑️ Eliminadas {g.deleted}</s-badge>}
                             {(g.errors || 0) > 0 && <s-badge tone="critical" size="small">❌ Errores {g.errors}</s-badge>}
                             <s-text variant="caption" tone="subdued" style={{ marginLeft: 8 }}>
                               {g.totalVariants ? `${g.totalVariants} variantes` : ''}
@@ -1148,6 +1194,10 @@ export default function Index() {
                                                   : "Error"
                                             }
                                           </s-badge>
+                                        )}
+
+                                        {info?.status === "deleted" && (
+                                          <s-badge tone="critical">🗑️ Eliminada (sin stock)</s-badge>
                                         )}
 
                                         {info?.status === "error" && (
