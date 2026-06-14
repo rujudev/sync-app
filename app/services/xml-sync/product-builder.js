@@ -37,7 +37,7 @@ export function sortCapacities(a, b) {
 export function normalizeOptions(arr = []) {
   return arr
     .map(opt => ({
-      name: (opt.name || opt.optionName || "").trim().toLowerCase(),
+      name: (opt.optionName || opt.name || "").trim().toLowerCase(),
       value: (opt.value || opt.name || "").trim().toLowerCase()
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -101,17 +101,65 @@ export function findVariant(existingVariants, newVariant) {
   return null;
 }
 
-// Determina si una variante existente necesita ser actualizada.
+// ── CORRECCIÓN BUG #5 ── Corregir comparación de opciones en variantNeedsUpdate.
+//
+// Problema original: la función comparaba `key(existingVar)` vs `key(newVar)`
+// usando `JSON.stringify(v.normalizedOptions)`. El problema era una asimetría
+// en cómo se construían las normalizedOptions de cada origen:
+//
+//   - Variante de Shopify (existingVar): normalizedOptions se construía desde
+//     `selectedOptions` (formato { name: "Capacidad", value: "128GB" }),
+//     por lo que normalizeOptions usaba `opt.value` para el campo `value`.
+//
+//   - Variante del feed (newVar): normalizedOptions se construía desde
+//     `optionValues` (formato { optionName: "Capacidad", name: "128GB" }),
+//     donde `opt.value` no existe, así que normalizeOptions usaba `opt.name`
+//     como fallback para el campo `value`.
+//
+// El resultado era que, aunque las opciones fueran idénticas en contenido,
+// la clave JSON podía diferir según el origen, produciendo falsos positivos
+// (actualizaciones innecesarias) o falsos negativos (cambios no detectados).
+//
+// Solución: normalizar ambas variantes a través de sus respectivas funciones
+// canónicas (buildOptionsKeyFromSelectedOptions para Shopify y
+// buildOptionsKeyFromOptionValues para el feed) antes de comparar,
+// garantizando que ambas claves se construyen con la misma lógica de campo.
 export function variantNeedsUpdate(existingVar, newVar) {
   const norm = s => String(s || "").trim().toLowerCase();
+  if (norm(existingVar.sku) !== norm(newVar.sku)) return true;
   if (Number(existingVar.price) !== Number(newVar.price)) return true;
   if (norm(existingVar.barcode) !== norm(newVar.barcode)) return true;
   if ((existingVar.currentMediaId || null) !== (newVar.mediaId || null)) return true;
-  const key = v => JSON.stringify(v.normalizedOptions);
-  return key(existingVar) !== key(newVar);
+
+  // Comparar opciones usando las funciones canónicas de cada origen para evitar
+  // la asimetría entre selectedOptions (Shopify) y optionValues (feed).
+  const existingOptionsKey = buildOptionsKeyFromSelectedOptions(existingVar.selectedOptions || []);
+  const newOptionsKey = buildOptionsKeyFromOptionValues(newVar.optionValues || []);
+  if (existingOptionsKey !== newOptionsKey) return true;
+
+  return false;
 }
 
 // Calcula qué campos del producto han cambiado respecto al estado en Shopify.
+// ── CORRECCIÓN BUG #7 ── Detectar cambios en productOptions sin enviarlos
+// en el payload de productUpdate.
+//
+// Problema original: computeProductUpdate no comparaba las opciones del
+// producto (productOptions). Si el feed añadía o eliminaba una capacidad,
+// color o condición, Shopify nunca recibía la actualización, dejando valores
+// huérfanos visibles en el admin.
+//
+// La solución correcta NO es incluir productOptions en productUpdate, porque
+// Shopify rechaza ese campo en esa mutation ("Field is not defined on
+// ProductUpdateInput"). Las opciones se gestionan con mutations separadas:
+// productOptionsCreate, productOptionUpdate y productOptionDelete.
+//
+// Lo que se hace aquí: comparar opciones y registrar el cambio en changedFields
+// para trazabilidad en logs, sin incluir el campo en el payload enviado a
+// PRODUCT_UPDATE. La sincronización real de opciones huérfanas se delega a
+// Shopify de forma implícita: cuando una variante con una opción determinada
+// se elimina (por out_of_stock o por desaparecer del feed), Shopify elimina
+// automáticamente el valor de opción si no queda ninguna variante que lo use.
 export function computeProductUpdate(existingProduct, desiredProduct) {
   const product = { id: existingProduct.id };
   const changedFields = [];
@@ -134,6 +182,32 @@ export function computeProductUpdate(existingProduct, desiredProduct) {
   if (JSON.stringify(existingTags) !== JSON.stringify(desiredTags)) {
     product.tags = desiredProduct.tags || [];
     changedFields.push("tags");
+  }
+
+  // Comparar productOptions para detectar si han cambiado capacidades,
+  // colores o condiciones disponibles.
+  // ── IMPORTANTE ── Shopify NO acepta productOptions dentro de productUpdate.
+  // La API requiere mutations separadas (productOptionsCreate / productOptionUpdate
+  // / productOptionDelete) para modificar opciones de un producto existente.
+  // Por eso registramos el cambio en changedFields (útil para logs y para que
+  // el caller sepa que las opciones han cambiado) pero NO lo incluimos en el
+  // payload `product` que se envía a PRODUCT_UPDATE.
+  // Si en el futuro se implementa la sincronización de opciones, habría que
+  // hacer una llamada adicional con las mutations correspondientes.
+  const serializeOptions = (opts = []) =>
+    JSON.stringify(
+      [...(opts || [])].map(o => ({
+        name: normalizeString(o.name),
+        values: [...(o.values || o.optionValues || [])].map(v => normalizeString(v.name)).sort()
+      })).sort((a, b) => a.name.localeCompare(b.name))
+    );
+
+  const existingOptionsStr = serializeOptions(existingProduct?.options);
+  const desiredOptionsStr = serializeOptions(desiredProduct?.productOptions);
+
+  if (existingOptionsStr !== desiredOptionsStr) {
+    // Solo registrar el cambio, no añadir productOptions al payload
+    changedFields.push("productOptions");
   }
 
   return { product, changedFields };
@@ -191,7 +265,7 @@ export function buildShopifyProductObject(group) {
     const minPrice = so === 'iOS' ? 219 : 180;
     const capacity = String(v.capacity || "").toUpperCase().replace(/\s+/g, "");
     const is64 = /^64(?:GB)?$/i.test(capacity);
-    return price > minPrice && !is64;
+    return price >= minPrice && !is64;
   });
 
   // ── CAMBIO 3 ── Deduplicar variantes con idéntica combinación de
@@ -236,10 +310,10 @@ export function buildShopifyProductObject(group) {
         price: Math.round((parseFloat(v.price) + margin) * 100) / 100,
         inventoryPolicy: "CONTINUE",
         optionValues: [
-          { optionName: "Capacidad", name: v.capacity },
-          { optionName: "Color", name: v.color },
-          { optionName: "Condición", name: CONDITION[v.condition] || v.condition },
-        ],
+          v.capacity  ? { optionName: "Capacidad", name: v.capacity }                             : null,
+          v.color     ? { optionName: "Color",     name: v.color }                                : null,
+          v.condition ? { optionName: "Condición", name: CONDITION[v.condition] || v.condition }  : null,
+        ].filter(Boolean),
         image: v.image || null
       };
       variant.normalizedOptions = normalizeOptions(variant.optionValues);
@@ -252,10 +326,10 @@ export function buildShopifyProductObject(group) {
     vendor: "SecondTech",
     descriptionHtml: buildDescriptionHtml(description, conditions),
     productOptions: [
-      { name: "Capacidad", values: capacities.map(c => ({ name: c })) },
-      { name: "Color", values: colors.map(c => ({ name: c })) },
-      { name: "Condición", values: conditions.map(c => ({ name: CONDITION[c] || c })) }
-    ],
+      capacities.length  ? { name: "Capacidad", values: capacities.map(c => ({ name: c })) }                 : null,
+      colors.length      ? { name: "Color",     values: colors.map(c => ({ name: c })) }                     : null,
+      conditions.length  ? { name: "Condición", values: conditions.map(c => ({ name: CONDITION[c] || c })) } : null,
+    ].filter(Boolean),
     images,
     variants
   };

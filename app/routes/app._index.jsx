@@ -377,7 +377,7 @@ export default function Index() {
     es.addEventListener("group_error", e => {
       const d = JSON.parse(e.data);
 
-
+      console.log("❌ [EVENT] group_error:", d);
       setGroupStatus(prev =>
         prev.map(g =>
           g.id === d.id ? { ...g, status: "error", error: d.error } : g
@@ -707,6 +707,10 @@ export default function Index() {
 
     return () => es.close();
   }, []);
+
+  useEffect(() => {
+    console.log("📊 [STATE] variantStatusByGroup actualizado:", variantStatusByGroup);
+  }, [variantStatusByGroup]);
 
   // ✨ NUEVO: useEffect que inicia procesamiento cuando recibimos productos del action
   useEffect(() => {

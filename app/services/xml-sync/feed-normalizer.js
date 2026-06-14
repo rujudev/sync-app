@@ -143,6 +143,16 @@ export function normalizeFeedItem(item) {
     if (!modelKey.split(/\s+/).includes('fe')) modelKey = `${modelKey} fe`;
   }
 
+  // ── NUEVO ── Descartar items con availability = "out_of_stock" antes de
+  // normalizar el resto de campos. El feed puede incluir SKUs agotados que
+  // no deben crear variantes en Shopify ni aparecer en ningún grupo.
+  // Se comprueba aquí, en el origen del pipeline, para que ningún módulo
+  // posterior (product-builder, sync-engine) tenga que conocer esta regla.
+  // El valor se normaliza a minúsculas para cubrir variantes del feed como
+  // "Out_Of_Stock", "OUT OF STOCK", etc.
+  const availability = String(get("availability") || "").trim().toLowerCase().replace(/[\s_]/g, "");
+  if (availability === "outofstock") return null;
+
   let priceRaw = String(get("sale_price") || "").trim();
   priceRaw = priceRaw.split(" ")[0].replace(",", ".").replace(/[^\d.]/g, "");
 
@@ -160,7 +170,7 @@ export function normalizeFeedItem(item) {
     price: parseFloat(priceRaw),
     image: get("image_link") || null,
     gtin: get("gtin") || null,
-    availability: get("availability") || null,
+    availability: availability || null,
     raw: item
   };
 }

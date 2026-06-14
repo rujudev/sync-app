@@ -1,7 +1,24 @@
 // attributes-utils.js
 // Helpers para extraer y normalizar capacidad (ej: 128GB, 1TB)
 
-const CAPACITY_RE = /\b(\d{1,4})\s?(GB|TB)\b/gi;
+// ── CORRECCIÓN BUG regex global ── No usar una regex con flag /g como
+// constante de módulo cuando se invoca en un bucle con .exec().
+//
+// Problema original: CAPACITY_RE se definía a nivel de módulo con flag /g.
+// En JavaScript, las regex con /g son stateful: mantienen un `lastIndex` entre
+// llamadas. Si extractCapacityFromString se invocaba repetidamente (como ocurre
+// en el pipeline de normalización del feed, que procesa cientos de items),
+// el `lastIndex` de una llamada anterior podía quedar sucio, haciendo que la
+// siguiente llamada empezase a buscar desde una posición incorrecta y perdiese
+// matches válidos (o no encontrase ninguno).
+//
+// Solución: recrear la regex dentro de la función en cada invocación.
+// El coste es mínimo comparado con el resto del pipeline y elimina completamente
+// el problema de estado compartido.
+
+function getCapacityRegex() {
+  return /\b(\d{1,4})\s?(GB|TB)\b/gi;
+}
 
 function pickBestCapacityFromMatches(matches) {
   if (!matches || matches.length === 0) return null;
@@ -10,27 +27,29 @@ function pickBestCapacityFromMatches(matches) {
 
 export function extractColorFromTitle(title = "") {
   if (!title) return null;
-  
+
   // Captura lo dentro del último paréntesis: (Blanco), (Azul), etc.
   const match = title.match(/\(([^)]+)\)\s*$/);
-  
+
   if (!match || !match[1]) return null;
-  
+
   const colorText = match[1].trim();
-  
+
   // Validar que no sea un modelo (ej: "A127F", "SM-721B", etc.)
   const isModelNumber = /^[A-Z0-9\-]+$/.test(colorText);
   if (isModelNumber) return null;
-  
+
   // Normalizar: "Azul Oscuro" → "azul oscuro"
   return colorText.toLowerCase();
 }
 
 export function extractCapacityFromString(s = "") {
   if (!s) return null;
+  // Regex creada localmente en cada llamada para evitar estado compartido de lastIndex
+  const regex = getCapacityRegex();
   const matches = [];
   let m;
-  while ((m = CAPACITY_RE.exec(String(s)))) {
+  while ((m = regex.exec(String(s)))) {
     const n = parseInt(m[1].replace(/\D/g, ""), 10);
     const unit = (m[2] || "GB").toUpperCase();
     const valueGB = unit === "TB" ? n * 1024 : n;

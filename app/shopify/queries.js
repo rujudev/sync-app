@@ -10,6 +10,15 @@ export const PRODUCT_SEARCH = `
           descriptionHtml
           handle
           tags
+          options {
+            id
+            name
+            position
+            optionValues {
+              id
+              name
+            }
+          }
           variants(first: 50) {
             edges { node { id sku barcode selectedOptions { name value } } }
           }
@@ -133,9 +142,15 @@ export const GET_PRODUCT_MEDIA = `
   }
 `;
 
+// ── ACTUALIZADO ── Se añade el parámetro `strategy` a la mutation.
+// Con REMOVE_STANDALONE_VARIANT, Shopify elimina automáticamente la variante
+// placeholder "Default Title" cuando se crea la primera variante real, sin
+// necesidad de borrarla manualmente ni de gestionar las opciones genéricas
+// por separado. Esto resuelve el error "Option does not exist" que ocurría
+// cuando el producto tenía la opción Title en lugar de Capacidad/Color/Condición.
 export const VARIANTS_CREATE = `
-    mutation ProductVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-        productVariantsBulkCreate(productId: $productId, variants: $variants) {
+    mutation ProductVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $strategy: ProductVariantsBulkCreateStrategy) {
+        productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: $strategy) {
             product {
                 id
             }
@@ -225,6 +240,15 @@ export const SET_INVENTORY_ITEM = `
 export const GET_PRODUCT_VARIANTS = `
   query GetProductVariants($id: ID!, $first: Int!, $after: String) {
     product(id: $id) {
+      options {
+        id
+        name
+        position
+        optionValues {
+          id
+          name
+        }
+      }
       variants(first: $first, after: $after) {
         nodes {
           id
@@ -409,6 +433,112 @@ export const METAFIELD_DEFINITION_CREATE = `
         type {
           name
           category  
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+// ── NUEVO ── Eliminar un producto completo de Shopify por ID.
+// Se usa cuando todas las variantes de un grupo pasan a out_of_stock
+// en el feed, lo que significa que no hay stock de ninguna variante
+// y el producto no debe estar visible en la tienda.
+export const PRODUCT_DELETE = `
+  mutation DeleteProduct($id: ID!) {
+    productDelete(input: { id: $id }) {
+      deletedProductId
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// ── NUEVO ── Crea opciones nuevas en un producto existente.
+// Se usa cuando el producto en Shopify tiene solo la opción genérica "Title"
+// (producto creado a medias en una sync anterior) y hay que añadir las opciones
+// reales Capacidad, Color y Condición antes de poder crear variantes.
+export const PRODUCT_OPTIONS_CREATE = `
+  mutation productOptionsCreate(
+    $productId: ID!
+    $options: [OptionCreateInput!]!
+  ) {
+    productOptionsCreate(productId: $productId, options: $options) {
+      product {
+        id
+        options {
+          id
+          name
+          position
+          optionValues {
+            id
+            name
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+// ── NUEVO ── Elimina una opción de un producto por ID.
+// Se usa para eliminar la opción genérica "Title" tras crear las opciones reales.
+export const PRODUCT_OPTION_DELETE = `
+  mutation productOptionDelete($productId: ID!, $optionId: ID!) {
+    productOptionDelete(productId: $productId, id: $optionId) {
+      deletedOptionId
+      product {
+        id
+        options {
+          id
+          name
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+// ── NUEVO ── Actualiza los valores de una opción existente de un producto.
+// Se usa para sincronizar los valores disponibles (ej: capacidades, colores)
+// antes de crear o actualizar variantes, evitando el error "Option does not
+// exist" cuando el feed trae valores distintos a los que tiene Shopify.
+export const PRODUCT_OPTION_UPDATE = `
+  mutation productOptionUpdate(
+    $productId: ID!
+    $option: OptionUpdateInput!
+    $optionValuesToAdd: [OptionValueCreateInput!]
+    $optionValuesToDelete: [ID!]
+  ) {
+    productOptionUpdate(
+      productId: $productId
+      option: $option
+      optionValuesToAdd: $optionValuesToAdd
+      optionValuesToDelete: $optionValuesToDelete
+    ) {
+      product {
+        id
+        options {
+          id
+          name
+          optionValues {
+            id
+            name
+          }
         }
       }
       userErrors {
