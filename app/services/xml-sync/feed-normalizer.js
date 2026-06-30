@@ -104,6 +104,21 @@ export function pickGroupDescription(group = []) {
   return group.map((item) => String(item?.description || "").trim()).find(Boolean) || "";
 }
 
+// Limpia la descripción del feed: sustituye la marca del proveedor y elimina
+// frases de garantía/financiación propias del proveedor que no deben aparecer
+// en nuestra tienda.
+export function cleanFeedDescription(raw = "") {
+  return String(raw || "")
+    .replace(/Cosladafon/gi, "Secondtech")
+    // "Además, ofrecemos servicios de financiación y 2 años de garantía de Secondtech para asegurar tu total satisfacción."
+    .replace(/Adem[aá]s,?\s+ofrecemos\s+servicios\s+de\s+financiaci[oó]n\s+y\s+2\s+a[ñn]os\s+de\s+garant[ií]a\s+de\s+Secondtech\s+para\s+asegurar\s+tu\s+total\s+satisfacci[oó]n\.?/gi, "")
+    // "Todos nuestros productos cuentan con 2 años de garantía de Secondtech y las transacciones son 100% seguras."
+    // seguido opcionalmente de "Financiación Flexible:&nbsp;Opciones de pago que se adaptan a tu presupuesto."
+    .replace(/Todos\s+nuestros\s+productos\s+cuentan\s+con\s+2\s+a[ñn]os\s+de\s+garant[ií]a\s+de\s+Secondtech\s+y\s+las\s+transacciones\s+son\s+100%\s+seguras\.(?:Financiaci[oó]n\s+Flexible:(?:&nbsp;|\s)+Opciones\s+de\s+pago\s+que\s+se\s+adaptan\s+a\s+tu\s+presupuesto\.?)?/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 // Convierte un item crudo del feed en un objeto normalizado listo para agrupar.
 export function normalizeFeedItem(item) {
   const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
@@ -162,7 +177,7 @@ export function normalizeFeedItem(item) {
     title,
     modelTitle,
     modelKey,
-    description: (get("description") || "").replace(/Cosladafon/gi, "Secondtech"),
+    description: cleanFeedDescription(get("description") || ""),
     brand,
     capacity,
     color,
