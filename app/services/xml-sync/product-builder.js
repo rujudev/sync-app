@@ -6,21 +6,32 @@ import { normalizeString, normalizeBrand, uniqStrings, isUsableIdentifier, norma
 import { pickGroupDescription } from './feed-normalizer.js';
 
 // ─── Aviso legal que se añade a productos reacondicionados/usados ───
-const REFURBISHED_LEGAL_NOTICE_HTML = `
+const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
+<h6>¿Por qué elegir SECONDTECH?</h6>
+<p>En <strong>SecondTech</strong> no solo te ofrecemos tecnología de la más alta calidad, como el <strong>${model}</strong>, sino también una experiencia de compra premium. Nuestro equipo de expertos está siempre listo para asesorarte y ayudarte a encontrar el dispositivo que mejor se adapte a tu ritmo de vida y necesidades. Además, respaldamos cada compra con 1 año de garantía propia para asegurar tu total tranquilidad.</p>
+<h6>Ventajas de comprar tu <strong>${model}</strong> con <strong>SecondTech</strong>:</h6>
+<ul>
+  <li><strong>Precios competitivos:</strong> Ofrecemos las tarifas más competitivas del mercado nacional.</li>
+  <li><strong>Atención 100% personalizada:</strong> Nos olvidamos de los bots; nuestro equipo resuelve tus dudas de forma directa y humana. Bien por WhatsApp, teléfono o mediante chat directo en nuestra web.</li>
+  <li><strong>Confianza y Seguridad:</strong> Todos nuestros productos reacondicionados incluyen 1 año de garantía y nuestra plataforma de pago es 100% segura.</li>
+  <li><strong>Ampliación de garantía exclusiva:</strong> Somos los únicos en el sector del reacondicionado que te permiten extender tu garantía*. De hecho, el 94% de nuestros clientes eligen ampliar su garantía. Por algo será.</li>
+</ul>
+<p>¡Tú solo disfruta de tu nuevo dispositivo; de lo demás, nos encargamos nosotros!</p>
+<p>Compra tu <strong>${model}</strong> en <strong>SecondTech</strong> y descubre por qué somos la tienda de tecnología reacondicionada preferida en España.</p>
 <h6>Información legal y garantía</h6>
 <p><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
-<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/20212</p>
+<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/2021</p>
 <p><strong>1 año de garantía.</strong></p>
 <p>Canon digital: <strong>3,25 €</strong> (incluido en el precio)</p>
 `;
 
-export function buildDescriptionHtml(baseDescription = "", conditions = []) {
+export function buildDescriptionHtml(model, baseDescription = "", conditions = []) {
   const hasRefurbished = conditions.some(c => ["refurbished", "used"].includes(String(c).toLowerCase()));
   const cleanBase = baseDescription || "";
   if (!hasRefurbished) return cleanBase;
   return cleanBase
-    ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML}`
-    : REFURBISHED_LEGAL_NOTICE_HTML;
+    ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML(model)}`
+    : REFURBISHED_LEGAL_NOTICE_HTML(model);
 }
 
 // Ordena capacidades numéricamente (GB < TB).
@@ -324,7 +335,7 @@ export function buildShopifyProductObject(group) {
     title,
     tags,
     vendor: "SecondTech",
-    descriptionHtml: buildDescriptionHtml(description, conditions),
+    descriptionHtml: buildDescriptionHtml(title, description, conditions),
     productOptions: [
       capacities.length  ? { name: "Capacidad", values: capacities.map(c => ({ name: c })) }                 : null,
       colors.length      ? { name: "Color",     values: colors.map(c => ({ name: c })) }                     : null,
