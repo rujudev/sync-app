@@ -102,14 +102,12 @@ export default function Index() {
   const [variantStatusByGroup, setVariantStatusByGroup] = useState({});
   const [productsWithSmallImages, setProductsWithSmallImages] = useState([]);
 
-  // Función para limpiar todo el estado de importación
-  const resetAll = async () => {
+  // Envía la señal de cancelación al backend sin borrar los datos mostrados.
+  // El estado se limpia al inicio de una nueva sincronización (sync-start).
+  const cancelSync = async () => {
     try {
       await fetch("/api/sync-cancel");
-
       console.log("🔴 Cancelación solicitada al backend");
-      setGroupStatus([]);
-      setVariantStatusByGroup({});
     } catch (e) {
       console.warn("No se pudo notificar la cancelación al backend", e);
     }
@@ -265,6 +263,19 @@ export default function Index() {
     };
   }, [groupStatus])
 
+  // Grupo actualmente en proceso y progreso de sus variantes
+  const currentGroup = groupStatus.find(g => g.status === "processing") || null;
+  const groupsDone = groupStatus.filter(g => !["pending", "processing"].includes(g.status)).length;
+  const totalGroups = groupStatus.length;
+
+  const currentGroupVariantEntries = Object.values(
+    currentGroup ? (variantStatusByGroup[currentGroup.id] || {}) : {}
+  );
+  const currentGroupProcessed = currentGroupVariantEntries.filter(v =>
+    ["success", "error", "deleted"].includes(v.status)
+  ).length;
+  const currentGroupTotal = currentGroup?.totalVariants || currentGroupVariantEntries.length || 1;
+
   useEffect(() => {
     const es = new EventSource("/api/sync-events");
 
@@ -291,6 +302,10 @@ export default function Index() {
     es.addEventListener("sync-start", e => {
       const d = JSON.parse(e.data);
 
+      // Limpiar datos de la sync anterior al arrancar una nueva
+      setGroupStatus([]);
+      setVariantStatusByGroup({});
+      setProductsWithSmallImages([]);
 
       setSyncState(prev => ({
         ...prev,
@@ -722,8 +737,6 @@ export default function Index() {
         status: "sync-completed",
         currentStep: "Sincronización completada"
       }));
-
-      resetAll();
     });
 
     es.addEventListener("sync-cancelled", e => {
@@ -836,7 +849,7 @@ export default function Index() {
                       <s-button
                         variant="secondary"
                         size="large"
-                        onClick={resetAll}
+                        onClick={cancelSync}
                       >
                         🛑 Cancelar importación
                       </s-button>
@@ -855,31 +868,51 @@ export default function Index() {
               <s-stack rowGap="large-100">
                 <s-stack direction="inline" columnGap="large">
                   <s-text variant="heading-sm" fontWeight="semibold">
-                    🚀 Procesamiento en Tiempo Real Real
+                    🚀 Procesamiento en Tiempo Real
                   </s-text>
                   <s-badge
-                    tone={syncState?.status === 'completed' ? 'success' : 'info'}
+                    tone={syncState?.status === 'sync-completed' ? 'success' : syncState?.status === 'cancelled' ? 'warning' : 'info'}
                     size="small"
                   >
-                    {syncState?.status === 'completed' ? '🎉 Completado' : '⚡ En Progreso'}
+                    {syncState?.status === 'sync-completed' ? '🎉 Completado' : syncState?.status === 'cancelled' ? '🛑 Cancelado' : '⚡ En Progreso'}
                   </s-badge>
                 </s-stack>
 
                 {/* BARRA DE PROGRESO VISUAL */}
-                <s-stack rowGap="large">
-                  <ProgressBar
-                    progress={((groupStatusTotals.totalProcessedProducts || 0) / (syncState?.totalItems || 1)) * 100}
-                    size="small"
-                  />
-                  <s-stack direction="inline" columnGap="base" blockSize="auto" justifyContent="center">
-                    <s-text variant="body-sm" tone="subdued">
-                      {groupStatusTotals.totalProcessedProducts} / {syncState?.totalItems || 0} productos individuales
-                    </s-text>
-                    <s-divider direction="block" />
-                    <s-text variant="caption" tone="subdued">
-                      {Math.round(((groupStatusTotals.totalProcessedProducts || 0) / (syncState?.totalItems || 1)) * 100)}% completado
-                    </s-text>
+                <s-stack rowGap="base">
+                  {/* Barra 1: progreso de grupos */}
+                  <s-stack rowGap="tight">
+                    <s-stack direction="inline" alignContent="space-between" justifyContent='space-between' blockSize="auto">
+                      <s-text variant="body-sm" fontWeight="medium">
+                        Grupos: {groupsDone} / {totalGroups}
+                      </s-text>
+                      <s-text variant="caption" tone="subdued">
+                        {totalGroups > 0 ? Math.round((groupsDone / totalGroups) * 100) : 0}%
+                      </s-text>
+                    </s-stack>
+                    <ProgressBar
+                      progress={totalGroups > 0 ? (groupsDone / totalGroups) * 100 : 0}
+                      size="small"
+                    />
                   </s-stack>
+
+                  {/* Barra 2: variantes del grupo en proceso */}
+                  {currentGroup && (
+                    <s-stack rowGap="tight">
+                      <s-stack direction="inline" alignContent="space-between" justifyContent='space-between' blockSize="auto">
+                        <s-text variant="body-sm" fontWeight="medium">
+                          Variantes de <em>{currentGroup.name || currentGroup.id}</em>: {currentGroupProcessed} / {currentGroupTotal}
+                        </s-text>
+                        <s-text variant="caption" tone="subdued">
+                          {Math.round((currentGroupProcessed / currentGroupTotal) * 100)}%
+                        </s-text>
+                      </s-stack>
+                      <ProgressBar
+                        progress={(currentGroupProcessed / currentGroupTotal) * 100}
+                        size="small"
+                      />
+                    </s-stack>
+                  )}
                 </s-stack>
               </s-stack>
 
