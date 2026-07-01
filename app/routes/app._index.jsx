@@ -1184,6 +1184,102 @@ export default function Index() {
           </s-section>
         )}
 
+        {/* PRODUCTOS ELIMINADOS: modelos huérfanos que ya no están en el feed.
+            Se muestra por encima de la tabla de procesados; solo el modelo. */}
+        {reconcileStatus && (
+          <s-section>
+            <s-card padding="base">
+              <s-stack gap="base">
+                {/* Cabecera con estado y contador */}
+                <s-stack direction="inline" alignment="space-between" blockAlignment="center" gap="base">
+                  <s-stack direction="inline" alignment="center" gap="200">
+                    <s-text variant="heading-sm" fontWeight="semibold">
+                      🗑️ Productos eliminados
+                    </s-text>
+                    <s-badge
+                      tone={
+                        reconcileStatus.phase === "error" ? "critical" :
+                        reconcileStatus.phase === "skipped" ? "warning" :
+                        (reconcileStatus.deleted?.length ? "critical" : "neutral")
+                      }
+                      size="small"
+                    >
+                      {reconcileStatus.deleted?.length || 0}
+                    </s-badge>
+                  </s-stack>
+
+                  {reconcileStatus.phase === "running" && (
+                    <s-stack direction="inline" alignment="center" gap="100">
+                      <s-spinner size="small" />
+                      <s-text variant="caption" tone="subdued">Eliminando…</s-text>
+                    </s-stack>
+                  )}
+                </s-stack>
+
+                {/* Mensajes de estado */}
+                {reconcileStatus.phase === "skipped" && (
+                  <s-banner tone="warning">
+                    <s-text variant="body-sm">
+                      ⚠️ Limpieza omitida porque hubo errores en algún grupo. No se han eliminado productos para evitar borrados accidentales.
+                    </s-text>
+                  </s-banner>
+                )}
+
+                {reconcileStatus.phase === "error" && (
+                  <s-banner tone="critical">
+                    <s-text variant="body-sm">
+                      ❌ Error durante la limpieza: {reconcileStatus.errors?.[reconcileStatus.errors.length - 1]?.message || "desconocido"}
+                    </s-text>
+                  </s-banner>
+                )}
+
+                {reconcileStatus.phase === "done" && !reconcileStatus.deleted?.length && !reconcileStatus.errors?.length && (
+                  <s-text variant="body-sm" tone="subdued">
+                    ✅ No había productos obsoletos que eliminar.
+                  </s-text>
+                )}
+
+                {/* Grid de chips con los modelos eliminados (sin variantes) */}
+                {reconcileStatus.deleted?.length > 0 && (
+                  <s-grid gridTemplateColumns="repeat(auto-fill, minmax(220px, 1fr))" gap="small">
+                    {reconcileStatus.deleted.map((p, idx) => (
+                      <s-box
+                        key={`${p.id}-${idx}`}
+                        padding="200"
+                        background="subdued"
+                        borderRadius="base"
+                        borderColor="critical"
+                        borderWidth="025"
+                      >
+                        <s-stack direction="inline" alignment="center" gap="100">
+                          <s-icon type="delete" tone="critical" />
+                          <s-text variant="body-sm" fontWeight="medium" className="capitalize">
+                            <span className="capitalize">{p.title || p.id}</span>
+                          </s-text>
+                        </s-stack>
+                      </s-box>
+                    ))}
+                  </s-grid>
+                )}
+
+                {/* Modelos que no se pudieron eliminar */}
+                {reconcileStatus.errors?.length > 0 && reconcileStatus.errors.some(e => e.id) && (
+                  <s-stack gap="tight">
+                    <s-text variant="body-sm" fontWeight="semibold">
+                      No se pudieron eliminar:
+                    </s-text>
+                    {reconcileStatus.errors.filter(e => e.id).map((p, idx) => (
+                      <s-box key={`err-${p.id}-${idx}`} padding="tight" background="subdued" borderRadius="base">
+                        <s-text variant="body-sm">⚠️ {p.title || p.id} — {p.message}</s-text>
+                      </s-box>
+                    ))}
+                  </s-stack>
+                )}
+              </s-stack>
+            </s-card>
+          </s-section>
+        )}
+
         {/* TABLA DE PRODUCTOS AGRUPADOS POR MODELO Y VARIANTES */}
         {groupStatus.length > 0 && (
           <s-section>
@@ -1447,80 +1543,6 @@ export default function Index() {
           </s-section>
         )}
 
-        {/* PRODUCTOS ELIMINADOS: modelos huérfanos que ya no están en el feed.
-            Sección independiente debajo de la tabla de procesados; solo muestra
-            el modelo, sin variantes. */}
-        {reconcileStatus && (
-          <s-section>
-            <s-card>
-              <s-banner
-                tone={
-                  reconcileStatus.phase === "error" ? "critical" :
-                  reconcileStatus.phase === "skipped" ? "warning" :
-                  reconcileStatus.phase === "running" ? "info" :
-                  (reconcileStatus.errors?.length ? "warning" : "success")
-                }
-              >
-                <s-stack gap="base">
-                  <s-text variant="heading-sm" fontWeight="semibold">
-                    🗑️ Productos eliminados ({reconcileStatus.deleted?.length || 0})
-                  </s-text>
-
-                  {reconcileStatus.phase === "running" && (
-                    <s-text variant="body-sm" tone="subdued">
-                      Buscando y eliminando productos que ya no están en el feed…
-                    </s-text>
-                  )}
-
-                  {reconcileStatus.phase === "skipped" && (
-                    <s-text variant="body-sm">
-                      ⚠️ Limpieza omitida porque hubo errores en algún grupo. No se han eliminado productos para evitar borrados accidentales.
-                    </s-text>
-                  )}
-
-                  {reconcileStatus.phase === "error" && (
-                    <s-text variant="body-sm">
-                      ❌ Error durante la limpieza: {reconcileStatus.errors?.[reconcileStatus.errors.length - 1]?.message || "desconocido"}
-                    </s-text>
-                  )}
-
-                  {reconcileStatus.phase === "done" && !reconcileStatus.deleted?.length && !reconcileStatus.errors?.length && (
-                    <s-text variant="body-sm">
-                      ✅ No había productos obsoletos que eliminar.
-                    </s-text>
-                  )}
-
-                  {/* Lista de modelos eliminados (sin variantes) */}
-                  {reconcileStatus.deleted?.length > 0 && (
-                    <s-stack gap="tight">
-                      {reconcileStatus.deleted.map((p, idx) => (
-                        <s-box key={`${p.id}-${idx}`} padding="tight" background="subdued" borderRadius="base">
-                          <s-text variant="body-sm" className="capitalize">
-                            <span className="capitalize">🗑️ {p.title || p.id}</span>
-                          </s-text>
-                        </s-box>
-                      ))}
-                    </s-stack>
-                  )}
-
-                  {/* Modelos que no se pudieron eliminar */}
-                  {reconcileStatus.errors?.length > 0 && reconcileStatus.errors.some(e => e.id) && (
-                    <s-stack gap="tight">
-                      <s-text variant="body-sm" fontWeight="semibold">
-                        No se pudieron eliminar:
-                      </s-text>
-                      {reconcileStatus.errors.filter(e => e.id).map((p, idx) => (
-                        <s-box key={`err-${p.id}-${idx}`} padding="tight" background="subdued" borderRadius="base">
-                          <s-text variant="body-sm">⚠️ {p.title || p.id} — {p.message}</s-text>
-                        </s-box>
-                      ))}
-                    </s-stack>
-                  )}
-                </s-stack>
-              </s-banner>
-            </s-card>
-          </s-section>
-        )}
       </s-page>
     </div>
   );
