@@ -48,8 +48,22 @@ export function isUsableIdentifier(value) {
   return !invalid.includes(v.toLowerCase());
 }
 
-// Elimina etiquetas [youtube]...[/youtube] de un texto HTML.
+// Elimina enlaces de YouTube de un texto HTML. El feed usa varios formatos:
+//   1) Bloque correcto:  [youtube]https://...[/youtube]
+//   2) Malformado:        youtube]https://...[/youtube]   (falta el "[" inicial)
+//   3) URL suelta:        https://www.youtube.com/watch?v=...  (sin etiquetas)
+// Se cubren los tres para que ninguna variante llegue a la descripción del
+// producto en Shopify.
 export function removeYouTubeTags(text) {
   if (!text) return text;
-  return text.replace(/\[youtube\][\s\S]*?\[\/youtube\]/gi, '').replace(/\s{2,}/g, ' ').trim();
+  return text
+    // 1) Bloques completos [youtube]...[/youtube]
+    .replace(/\[youtube\][\s\S]*?\[\/youtube\]/gi, '')
+    // 2) URLs de YouTube sueltas (se detienen antes de un espacio, "[" o "<",
+    //    por lo que también limpian el caso malformado "youtube]https://...")
+    .replace(/https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s\[<]+/gi, '')
+    // 3) Etiquetas residuales o malformadas: [youtube], [/youtube], "youtube]"
+    .replace(/\[?\/?youtube\]/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }

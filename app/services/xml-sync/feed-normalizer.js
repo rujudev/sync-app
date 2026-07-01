@@ -6,7 +6,7 @@ import { COLORS } from '../../constants/colors.js';
 import { FORBIDDEN_MODEL_WORDS } from '../../constants/forbidden-words.js';
 import { MODELS } from '../../constants/models.js';
 import { extractCapacity, extractColorFromTitle } from '../../../utils/attributes-utils.js';
-import { normalizeText, normalizeString, normalizeBrand } from '../../../utils/normalize-utils.js';
+import { normalizeText, normalizeString, normalizeBrand, removeYouTubeTags } from '../../../utils/normalize-utils.js';
 
 // Extrae el título del modelo limpiando capacidad, color, condición y
 // códigos de modelo del título original del feed.
@@ -108,7 +108,11 @@ export function pickGroupDescription(group = []) {
 // frases de garantía/financiación propias del proveedor que no deben aparecer
 // en nuestra tienda.
 export function cleanFeedDescription(raw = "") {
-  return String(raw || "")
+  // Eliminar primero los enlaces de YouTube en formato [youtube]...[/youtube]
+  // para que no lleguen a la descripción del producto en Shopify. Se limpia
+  // aquí, en el origen, de modo que tanto la creación como la actualización
+  // (que comparan descriptionHtml) reciban el texto ya sin el enlace.
+  return removeYouTubeTags(String(raw || ""))
     .replace(/Cosladafon/gi, "Secondtech")
     // "Además, ofrecemos servicios de financiación y 2 años de garantía de Secondtech para asegurar tu total satisfacción."
     .replace(/Adem[aá]s,?\s+ofrecemos\s+servicios\s+de\s+financiaci[oó]n\s+y\s+2\s+a[ñn]os\s+de\s+garant[ií]a\s+de\s+Secondtech\s+para\s+asegurar\s+tu\s+total\s+satisfacci[oó]n\.?/gi, "")
