@@ -460,6 +460,27 @@ export const PRODUCT_DELETE = `
   }
 `;
 
+// ── NUEVO ── Pagina todos los productos gestionados por la app (tag "cosladafon").
+// Se usa en la reconciliación final para detectar productos huérfanos: los que
+// tienen el tag pero cuyo modelo ya no aparece en ningún grupo del feed y que,
+// por tanto, deben eliminarse de la tienda.
+export const GET_PRODUCTS_BY_TAG = `
+  query ProductsByTag($query: String!, $cursor: String) {
+    products(first: 100, query: $query, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          title
+        }
+      }
+    }
+  }
+`;
+
 // ── NUEVO ── Crea opciones nuevas en un producto existente.
 // Se usa cuando el producto en Shopify tiene solo la opción genérica "Title"
 // (producto creado a medias en una sync anterior) y hay que añadir las opciones

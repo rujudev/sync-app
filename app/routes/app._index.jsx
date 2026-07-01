@@ -101,6 +101,9 @@ export default function Index() {
   const [groupStatus, setGroupStatus] = useState([]);
   const [variantStatusByGroup, setVariantStatusByGroup] = useState({});
   const [productsWithSmallImages, setProductsWithSmallImages] = useState([]);
+  // Estado de la reconciliación final de huérfanos (productos con tag
+  // "cosladafon" cuyo modelo ya no aparece en el feed y se eliminan).
+  const [reconcileStatus, setReconcileStatus] = useState(null);
 
   // Envía la señal de cancelación al backend sin borrar los datos mostrados.
   // El estado se limpia al inicio de una nueva sincronización (sync-start).
@@ -306,6 +309,7 @@ export default function Index() {
       setGroupStatus([]);
       setVariantStatusByGroup({});
       setProductsWithSmallImages([]);
+      setReconcileStatus(null);
 
       setSyncState(prev => ({
         ...prev,
@@ -728,6 +732,80 @@ export default function Index() {
             : g
         )
       );
+    });
+
+    // ── RECONCILIACIÓN DE HUÉRFANOS ────────────────────────────────────────
+    // Fase final: se eliminan los productos con tag "cosladafon" cuyo modelo
+    // ya no aparece en el feed. Estos eventos alimentan el panel de resumen.
+    es.addEventListener("reconcile-start", () => {
+      setReconcileStatus({
+        phase: "running",
+        managed: 0,
+        synced: 0,
+        orphans: [],
+        deleted: [],
+        errors: [],
+      });
+    });
+
+    es.addEventListener("reconcile-detected", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus(prev => ({
+        ...(prev || { deleted: [], errors: [] }),
+        phase: "running",
+        managed: d.managed || 0,
+        synced: d.synced || 0,
+        orphans: d.orphans || [],
+      }));
+    });
+
+    es.addEventListener("reconcile-product-deleted", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus(prev => ({
+        ...(prev || { orphans: [], errors: [] }),
+        phase: "running",
+        deleted: [...(prev?.deleted || []), { id: d.productId, title: d.title }],
+      }));
+    });
+
+    es.addEventListener("reconcile-product-error", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus(prev => ({
+        ...(prev || { orphans: [], deleted: [] }),
+        phase: "running",
+        errors: [...(prev?.errors || []), { id: d.productId, title: d.title, message: d.errors?.[0]?.message || "Error" }],
+      }));
+    });
+
+    es.addEventListener("reconcile-end", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus(prev => ({
+        ...(prev || { orphans: [], deleted: [], errors: [] }),
+        phase: "done",
+        totalDeleted: d.deleted || 0,
+      }));
+    });
+
+    es.addEventListener("reconcile-skipped", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus({
+        phase: "skipped",
+        reason: d.reason,
+        managed: 0,
+        synced: 0,
+        orphans: [],
+        deleted: [],
+        errors: [],
+      });
+    });
+
+    es.addEventListener("reconcile-error", e => {
+      const d = JSON.parse(e.data);
+      setReconcileStatus(prev => ({
+        ...(prev || { orphans: [], deleted: [] }),
+        phase: "error",
+        errors: [...(prev?.errors || []), { message: d.error || "Error listando productos" }],
+      }));
     });
 
     es.addEventListener("sync-end", () => {
@@ -1366,6 +1444,81 @@ export default function Index() {
                 onChange={newPage => setPage(newPage)}
               />
             </s-box>
+          </s-section>
+        )}
+
+        {/* PRODUCTOS ELIMINADOS: modelos huérfanos que ya no están en el feed.
+            Sección independiente debajo de la tabla de procesados; solo muestra
+            el modelo, sin variantes. */}
+        {reconcileStatus && (
+          <s-section>
+            <s-card>
+              <s-banner
+                tone={
+                  reconcileStatus.phase === "error" ? "critical" :
+                  reconcileStatus.phase === "skipped" ? "warning" :
+                  reconcileStatus.phase === "running" ? "info" :
+                  (reconcileStatus.errors?.length ? "warning" : "success")
+                }
+              >
+                <s-stack gap="base">
+                  <s-text variant="heading-sm" fontWeight="semibold">
+                    🗑️ Productos eliminados ({reconcileStatus.deleted?.length || 0})
+                  </s-text>
+
+                  {reconcileStatus.phase === "running" && (
+                    <s-text variant="body-sm" tone="subdued">
+                      Buscando y eliminando productos que ya no están en el feed…
+                    </s-text>
+                  )}
+
+                  {reconcileStatus.phase === "skipped" && (
+                    <s-text variant="body-sm">
+                      ⚠️ Limpieza omitida porque hubo errores en algún grupo. No se han eliminado productos para evitar borrados accidentales.
+                    </s-text>
+                  )}
+
+                  {reconcileStatus.phase === "error" && (
+                    <s-text variant="body-sm">
+                      ❌ Error durante la limpieza: {reconcileStatus.errors?.[reconcileStatus.errors.length - 1]?.message || "desconocido"}
+                    </s-text>
+                  )}
+
+                  {reconcileStatus.phase === "done" && !reconcileStatus.deleted?.length && !reconcileStatus.errors?.length && (
+                    <s-text variant="body-sm">
+                      ✅ No había productos obsoletos que eliminar.
+                    </s-text>
+                  )}
+
+                  {/* Lista de modelos eliminados (sin variantes) */}
+                  {reconcileStatus.deleted?.length > 0 && (
+                    <s-stack gap="tight">
+                      {reconcileStatus.deleted.map((p, idx) => (
+                        <s-box key={`${p.id}-${idx}`} padding="tight" background="subdued" borderRadius="base">
+                          <s-text variant="body-sm" className="capitalize">
+                            <span className="capitalize">🗑️ {p.title || p.id}</span>
+                          </s-text>
+                        </s-box>
+                      ))}
+                    </s-stack>
+                  )}
+
+                  {/* Modelos que no se pudieron eliminar */}
+                  {reconcileStatus.errors?.length > 0 && reconcileStatus.errors.some(e => e.id) && (
+                    <s-stack gap="tight">
+                      <s-text variant="body-sm" fontWeight="semibold">
+                        No se pudieron eliminar:
+                      </s-text>
+                      {reconcileStatus.errors.filter(e => e.id).map((p, idx) => (
+                        <s-box key={`err-${p.id}-${idx}`} padding="tight" background="subdued" borderRadius="base">
+                          <s-text variant="body-sm">⚠️ {p.title || p.id} — {p.message}</s-text>
+                        </s-box>
+                      ))}
+                    </s-stack>
+                  )}
+                </s-stack>
+              </s-banner>
+            </s-card>
           </s-section>
         )}
       </s-page>

@@ -14,12 +14,19 @@ import { resetCancelFlag, wasCancelled } from '../../routes/api.sync-cancel.js';
 import {
   GET_PUBLICATIONS,
   GET_PRODUCT_MEDIA,
+  GET_PRODUCTS_BY_TAG,
   PRODUCT_CREATE_MEDIA,
   PRODUCT_DELETE,
   PUBLISH_PRODUCT,
   VARIANTS_CREATE,
   VARIANTS_UPDATE,
 } from '../../shopify/queries';
+
+// Tag con el que la app marca todos los productos que crea. Se usa en la
+// reconciliación final para acotar el borrado de huérfanos exclusivamente a
+// los productos gestionados por esta sincronización, sin tocar nunca los que
+// se hayan añadido manualmente a la tienda.
+const MANAGED_PRODUCT_TAG = 'cosladafon';
 
 // Estado de progreso por grupo (variantes totales/procesadas/con error).
 const groupsState = {};
@@ -627,13 +634,20 @@ async function processGroup(admin, groupId, groupItems) {
       logger.detail(`Variante detectada — SKU: ${v.sku} | Price: ${v.price} | Opciones: ${v.optionValues.map(ov => `${ov.optionName}:${ov.name}`).join(", ")}`)
     );
 
+    // Se hoista fuera del try para poder devolver el ID del producto recién
+    // creado aunque un paso posterior (sync de variantes, metafields, publish)
+    // lance una excepción. Sin esto, la reconciliación final vería un producto
+    // creado y ya etiquetado como "cosladafon" pero sin ID registrado, y lo
+    // borraría como huérfano.
+    let createdProduct = null;
     try {
       const { success, product, errors } = await createShopifyProduct(admin, productObj, groupId);
 
       if (!success || !product) {
         logger.warn(`⚠️ No se creó el producto`, productObj.title, errors);
-        return { success: false, product: null };
+        return { success: false, product: null, error: true };
       }
+      createdProduct = product;
 
       sendProgress({ type: "product_created", groupId, result: { success, product } });
 
@@ -650,6 +664,9 @@ async function processGroup(admin, groupId, groupItems) {
     } catch (err) {
       logger.error(`❌ Error creating product en processGroup:`, err);
       if (err.body?.errors) logger.error(`❌ An error occurred:`, err?.body.errors || err);
+      // Devolver el producto creado (si lo hubo) para preservar su ID y marcar
+      // el fallo, de modo que la reconciliación no lo borre y quede bloqueada.
+      return { success: false, product: createdProduct, error: true };
     }
   } else {
     await updateShopifyProduct(admin, existing, productObj, groupId);
@@ -662,8 +679,90 @@ async function processGroup(admin, groupId, groupItems) {
     await adminGraphql(admin, PUBLISH_PRODUCT, { id: existing.id, input: publicationsIDs });
     return { success: true, product: existing, synced };
   }
+}
 
-  return { success: false, product: null };
+// ── RECONCILIACIÓN DE HUÉRFANOS ─────────────────────────────────────────────
+// Elimina de la tienda los productos gestionados por la app (tag "cosladafon")
+// cuyo modelo ya no aparece en ningún grupo del feed sincronizado.
+//
+// Motivación: el bucle principal de syncXmlString solo recorre los grupos que
+// llegan en el XML. Un producto creado en una sync anterior cuyo modelo
+// desaparece por completo del feed (no llega ni como out_of_stock) nunca es
+// visitado y quedaría huérfano en la tienda indefinidamente.
+//
+// Estrategia:
+//   1. Paginar todos los productos con el tag MANAGED_PRODUCT_TAG.
+//   2. Restar los IDs que esta ejecución creó o actualizó (syncedProductIds).
+//   3. Eliminar los sobrantes con PRODUCT_DELETE.
+//
+// El acotar el borrado al tag garantiza que jamás se toquen productos añadidos
+// manualmente a la tienda. Solo se invoca cuando la sync termina completa (no
+// cancelada), para no borrar productos de grupos que aún no se habían procesado.
+async function reconcileOrphanProducts(admin, syncedProductIds) {
+  logger.section(`🧹 Reconciliación de huérfanos (tag "${MANAGED_PRODUCT_TAG}")`);
+  sendProgress({ type: "reconcile-start", message: "Buscando productos huérfanos" });
+
+  // Paginar todos los productos gestionados por la app.
+  const managedProducts = [];
+  let cursor = null;
+  try {
+    do {
+      const res = await adminGraphql(admin, GET_PRODUCTS_BY_TAG, {
+        query: `tag:${MANAGED_PRODUCT_TAG}`,
+        cursor,
+      });
+      const data = await res.json();
+      const conn = data?.data?.products;
+      const edges = conn?.edges || [];
+      edges.forEach(e => e?.node?.id && managedProducts.push({ id: e.node.id, title: e.node.title }));
+      cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+    } while (cursor);
+  } catch (err) {
+    logger.error(`❌ [RECONCILE] Error listando productos gestionados: ${err?.message || err}`);
+    sendProgress({ type: "reconcile-error", error: err?.message || String(err) });
+    return;
+  }
+
+  // Los huérfanos son los productos con el tag que esta sync no tocó.
+  const orphans = managedProducts.filter(p => !syncedProductIds.has(p.id));
+
+  logger.info(`📋 [RECONCILE] Gestionados: ${managedProducts.length} | Sincronizados: ${syncedProductIds.size} | Huérfanos a eliminar: ${orphans.length}`);
+  sendProgress({
+    type: "reconcile-detected",
+    managed: managedProducts.length,
+    synced: syncedProductIds.size,
+    orphans: orphans.map(o => ({ id: o.id, title: o.title })),
+  });
+
+  if (orphans.length === 0) {
+    logger.success(`✅ [RECONCILE] No hay productos huérfanos.`);
+    sendProgress({ type: "reconcile-end", deleted: 0 });
+    return;
+  }
+
+  let deleted = 0;
+  for (const orphan of orphans) {
+    logger.warn(`🗑️ [RECONCILE] Eliminando huérfano: ${orphan.id} — ${orphan.title}`);
+    try {
+      const delRes = await adminGraphql(admin, PRODUCT_DELETE, { id: orphan.id });
+      const delData = await delRes.json();
+      const delErrors = delData?.data?.productDelete?.userErrors || [];
+
+      if (delErrors.length) {
+        logger.error(`❌ [RECONCILE] Error eliminando ${orphan.id}:`, delErrors);
+        sendProgress({ type: "reconcile-product-error", productId: orphan.id, title: orphan.title, errors: delErrors });
+      } else {
+        deleted++;
+        sendProgress({ type: "reconcile-product-deleted", productId: orphan.id, title: orphan.title });
+      }
+    } catch (err) {
+      logger.error(`❌ [RECONCILE] Excepción eliminando ${orphan.id}: ${err?.message || err}`);
+      sendProgress({ type: "reconcile-product-error", productId: orphan.id, title: orphan.title, errors: [{ message: err?.message || String(err) }] });
+    }
+  }
+
+  logger.success(`✅ [RECONCILE] ${deleted}/${orphans.length} huérfano(s) eliminados.`);
+  sendProgress({ type: "reconcile-end", deleted });
 }
 
 // Punto de entrada principal: descarga el XML, normaliza, agrupa y sincroniza
@@ -689,6 +788,15 @@ export async function syncXmlString(admin, xmlString) {
 
     const results = {};
     let processedGroups = 0;
+    // IDs de productos creados o actualizados en esta ejecución. Se usa en la
+    // reconciliación final para no eliminar como huérfanos los productos que el
+    // feed sí ha tocado.
+    const syncedProductIds = new Set();
+    // Se marca en cuanto un grupo falla de forma que deje el estado incierto
+    // (excepción en el bucle o fallo real dentro de processGroup). Bloquea la
+    // reconciliación: si no sabemos con certeza qué productos quedaron tocados,
+    // no podemos arriesgarnos a borrar huérfanos que en realidad sí existen.
+    let hadGroupError = false;
     logger.info(`🚀 Iniciando sincronización de ${Object.keys(groups).length} grupos de productos.`);
 
     for (const [groupId, groupItems] of Object.entries(groups)) {
@@ -700,6 +808,16 @@ export async function syncXmlString(admin, xmlString) {
 
         results[groupId] = await processGroup(admin, groupId, groupItems);
 
+        // Registrar el producto tocado (creado o existente) para que la
+        // reconciliación no lo considere huérfano.
+        const touchedId = results[groupId]?.product?.id;
+        if (touchedId) syncedProductIds.add(touchedId);
+
+        // Un fallo real de processGroup (creación fallida, excepción interna)
+        // deja el estado incierto: bloquear la reconciliación. Los grupos
+        // out_of_stock devuelven success:false SIN error, y no cuentan aquí.
+        if (results[groupId]?.error) hadGroupError = true;
+
         sendProgress({ type: "group_end", id: groupId, result: results[groupId] });
         processedGroups++;
         logger.info(`📊 Progreso: ${processedGroups}/${Object.keys(groups).length} grupos completados.`);
@@ -707,6 +825,7 @@ export async function syncXmlString(admin, xmlString) {
       } catch (err) {
         logger.error(`❌ Error en Grupo [${groupId}]: ${err?.message || String(err)}`);
         results[groupId] = { success: false, error: err?.message || String(err) };
+        hadGroupError = true;
         sendProgress({ type: "group_error", id: groupId, error: err?.message || String(err) });
       }
     }
@@ -715,6 +834,18 @@ export async function syncXmlString(admin, xmlString) {
       logger.warn(`🛑 Sincronización cancelada por el usuario.`);
       sendProgress({ type: "sync-cancelled", message: "Sincronización cancelada" });
     } else {
+      // Reconciliación final: eliminar los productos gestionados por la app
+      // cuyo modelo ya no aparece en el feed. Solo se ejecuta cuando la sync
+      // completa todos los grupos sin errores; si se canceló o algún grupo
+      // falló, syncedProductIds estaría incompleto y podríamos borrar productos
+      // que en realidad sí existen en el feed.
+      if (hadGroupError) {
+        logger.warn(`⚠️ [RECONCILE] Omitida: hubo errores en algún grupo. No se eliminan huérfanos para evitar borrados accidentales.`);
+        sendProgress({ type: "reconcile-skipped", reason: "group_errors" });
+      } else {
+        await reconcileOrphanProducts(admin, syncedProductIds);
+      }
+
       logger.success(`✨ Sincronización finalizada con éxito.`);
       sendProgress({ type: "sync-end", results });
     }
