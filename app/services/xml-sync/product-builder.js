@@ -18,6 +18,8 @@ const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
 </ul>
 <p>¡Tú solo disfruta de tu nuevo dispositivo; de lo demás, nos encargamos nosotros!</p>
 <p>Compra tu <strong>${model}</strong> en <strong>SecondTech</strong> y descubre por qué somos la tienda de tecnología reacondicionada preferida en España.</p>
+<h6>Estado de la batería</h6>
+<p>Las baterías de todos nuestros dispositivos reacondicionados son comprobadas por nuestros técnicos expertos. En todos los dispositivos nos aseguramos de que disponen de una salud de batería igual o superior al <strong>85% mínimo</strong>. Por debajo del 85%, siempre las cambiamos.</p>
 <h6>Información legal y garantía</h6>
 <p><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
 <p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/2021</p>
