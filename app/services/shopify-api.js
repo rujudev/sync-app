@@ -27,6 +27,7 @@ const PRODUCT_METAFIELD_DEFINITIONS = [
   { name: "Condición",              namespace: "custom", key: "condition",            type: "single_line_text_field" },
   { name: "Condiciones disponibles",namespace: "custom", key: "conditions_available", type: "list.single_line_text_field" },
   { name: "Capacidades disponibles",namespace: "custom", key: "capacities_available", type: "list.single_line_text_field" },
+  { name: "Warranty elegible",      namespace: "custom", key: "warranty_elegible",    type: "boolean" },
 ];
 
 let _metafieldDefinitionsEnsured = false;
@@ -228,6 +229,9 @@ export async function setProductMetafields(admin, productId, group) {
     { ownerId: productId, namespace: "custom", key: "condition",            value: conditions[0] || "nuevo",          type: "single_line_text_field" },
     { ownerId: productId, namespace: "custom", key: "conditions_available", value: JSON.stringify(conditions),        type: "list.single_line_text_field" },
     { ownerId: productId, namespace: "custom", key: "capacities_available", value: JSON.stringify(capacities),        type: "list.single_line_text_field" },
+    // Todos los productos gestionados por la sync son elegibles para
+    // ampliación de garantía.
+    { ownerId: productId, namespace: "custom", key: "warranty_elegible",    value: "true",                            type: "boolean" },
   ];
 
   const res = await adminGraphql(admin, SET_PRODUCT_METAFIELDS, { metafields });
