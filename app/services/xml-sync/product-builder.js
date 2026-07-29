@@ -33,7 +33,7 @@ export function buildDescriptionHtml(model, baseDescription = "", conditions = [
   if (!cleanBase && !hasRefurbished) return null;   // ← nada que escribir
   if (!hasRefurbished) return cleanBase;
   return cleanBase
-    ? `${cleanBase}<br>${REFURBISHED_LEGAL_NOTICE_HTML(model)}`
+    ? `${cleanBase}${REFURBISHED_LEGAL_NOTICE_HTML(model)}`
     : null;                                          // ← NO publicar el legal solo
 }
 

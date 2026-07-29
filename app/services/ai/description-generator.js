@@ -18,8 +18,8 @@ import { callJson, isEnabled } from './gemini-client.js';
 import { sanitizeDescriptionHtml } from './sanitize-html.js';
 
 // Súbela para regenerar todo el catálogo a propósito tras cambiar el estilo,
-// el orden de los bloques o las specs que se extraen.
-export const PROMPT_VERSION = 2;
+// el orden de los bloques, las specs que se extraen o el HTML que se construye.
+export const PROMPT_VERSION = 3;
 
 // Longitud mínima del texto del proveedor para que merezca la pena llamar a la
 // IA. Por debajo no hay specs que extraer.
@@ -95,6 +95,28 @@ const escapeHtml = (s) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+// Resalta la primera aparición del nombre del modelo dentro de un texto YA
+// escapado. Es coherente con REFURBISHED_LEGAL_NOTICE_HTML, que también lo pone
+// en <strong>, y hace que el término por el que realmente busca el cliente
+// destaque dentro del párrafo.
+//
+// Solo la primera aparición: repetirlo en negrita varias veces queda cargado y
+// no aporta nada.
+const destacarModelo = (textoEscapado, modelTitle) => {
+  const modelo = String(modelTitle || '').trim();
+  if (!modelo) return textoEscapado;
+
+  // El texto ya viene escapado, así que el patrón también debe estarlo. Y hay
+  // modelos con caracteres especiales de expresión regular ("Galaxy S21+").
+  const patron = escapeHtml(modelo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Se sustituye por el nombre canónico, no por lo que escribió el modelo. La
+  // coincidencia es insensible a mayúsculas, así que si la IA escribe
+  // "iphone 12 mini" se corrige a "iPhone 12 Mini" — en negrita, un fallo de
+  // capitalización cantaría el doble.
+  return textoEscapado.replace(new RegExp(patron, 'i'), `<strong>${escapeHtml(modelo)}</strong>`);
+};
+
 // Un valor sirve si tiene sustancia. Descarta los "no disponible" y variantes
 // que el modelo cuela a veces en lugar de la cadena vacía que se le pide.
 const esValorUtil = (v) => {
@@ -136,7 +158,7 @@ function construirHtml(datos, modelTitle) {
 
   const frase = String(datos.frase || '').trim();
   if (frase.length >= 40) {
-    partes.push(`<p>${escapeHtml(frase)}</p>`);
+    partes.push(`<p>${destacarModelo(escapeHtml(frase), modelTitle)}</p>`);
   }
 
   // Sin specs y sin frase no hay nada que publicar.
