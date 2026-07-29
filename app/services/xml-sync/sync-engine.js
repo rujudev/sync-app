@@ -6,7 +6,7 @@ import { adminGraphql, logger } from '../config.js';
 import { sendProgress } from '../progress.js';
 import { normalizeString } from '../../../utils/normalize-utils.js';
 import { parseXmlItems } from './xml-parser.js';
-import { normalizeFeedItem, groupByModelKey } from './feed-normalizer.js';
+import { buildCacheKey, normalizeFeedItem, groupByModelKey, isSyncableItem } from './feed-normalizer.js';
 import { buildShopifyProductObject, convertVariantForShopify, sanitizeVariantForGraphQL, findVariant, variantNeedsUpdate, isDuplicateVariant, normalizeOptions, buildOptionsKeyFromSelectedOptions, buildOptionsKeyFromOptionValues } from './product-builder.js';
 import { buildImageMapByMatching, getProductMediaWithRetry, getImageDimensions, isImageSmall, extractBaseName } from '../media-utils.js';
 import { findExistingProduct, createShopifyProduct, updateShopifyProduct, getAllProductVariants, setProductMetafields, ensureProductMetafieldDefinitions, syncProductOptions } from '../shopify-api.js';
@@ -21,6 +21,9 @@ import {
   VARIANTS_CREATE,
   VARIANTS_UPDATE,
 } from '../../shopify/queries';
+import { resolveModels } from '../ai/model-resolver.js';
+import { ensureDescription } from '../ai/description-generator.js';
+import { freezeLiveResolutions } from '../ai/model-identity.js';
 
 // Tag con el que la app marca todos los productos que crea. Se usa en la
 // reconciliación final para acotar el borrado de huérfanos exclusivamente a
@@ -583,7 +586,17 @@ async function processGroup(admin, groupId, groupItems) {
     logger.detail(`[PUBLICACIÓN] Publicando en ${publicationsIDs.length} canal(es).`);
   }
 
-  const productObj = buildShopifyProductObject(groupItems);
+  // Descripción por IA, perezosa y cacheada por modelKey. Devuelve null si no
+  // hay clave, si falla o si el resultado no pasa el saneado; en ese caso
+  // buildShopifyProductObject deja descriptionHtml a null y se omite del
+  // payload, sin tocar la descripción que ya tuviera el producto en Shopify.
+  const aiDescription = await ensureDescription(
+    groupId,
+    groupItems[0]?.modelTitle,
+    groupItems[0]?.brand
+  );
+
+  const productObj = buildShopifyProductObject(groupItems, aiDescription);
 
   if (!productObj?.variants?.length) {
     // ── NUEVO ── Si todas las variantes del grupo han sido descartadas
@@ -780,8 +793,41 @@ export async function syncXmlString(admin, xmlString) {
 
     sendProgress({ type: "sync-start", message: "Sincronización iniciada", totalProducts: rawItems.length });
 
-    const normalized = rawItems.map(normalizeFeedItem).filter(Boolean);
+    // ── FASE IA 0: congelación de identidad (no bloqueante) ──
+    try {
+      const idn = await freezeLiveResolutions(admin, rawItems);
+      sendProgress({ type: "ai-identity", ...idn });
+    } catch (err) {
+      logger.warn(`⚠️ [IDENTIDAD] No se pudo congelar: ${err?.message || err}`);
+      sendProgress({ type: "ai-identity-error", error: err?.message || String(err) });
+    }
+
+    // ── FASE IA 1: resolución de modelos ────────────────────────────────────
+    // No bloqueante: si falla, resolutions queda vacío y normalizeFeedItem
+    // cae al extractor determinista de siempre.
+    // Solo los items que pueden acabar en Shopify. El feed trae ~2.100
+    // out_of_stock que normalizeFeedItem descarta: resolverlos con IA sería
+    // tirar cuota y ~20 minutos por sync.
+    const syncableItems = rawItems.filter(isSyncableItem);
+
+    let resolutions = new Map();
+    try {
+      sendProgress({ type: "ai-resolve-start", total: syncableItems.length });
+      // resolveModels emite su propio "ai-resolve-end" con el desglose.
+      resolutions = await resolveModels(syncableItems);
+    } catch (err) {
+      logger.warn(`⚠️ [IA] Resolución de modelos no disponible, se usa el extractor: ${err?.message || err}`);
+    }
+
+    const normalized = rawItems
+      .map(item => normalizeFeedItem(item, resolutions.get(buildCacheKey(item)) || null))
+      .filter(Boolean);
     const groups = groupByModelKey(normalized);
+
+    // Las descripciones NO se generan aquí: se piden de forma perezosa dentro
+    // de processGroup (ensureDescription). Como pre-pasada bloqueaban la sync
+    // varios minutos sin tocar Shopify; así los productos empiezan a
+    // sincronizarse de inmediato y la latencia de la IA se solapa con el resto.
 
     sendProgress({ type: "groups-detected", groups });
     sendProgress({ type: "groups_list", groups: Object.keys(groups) });

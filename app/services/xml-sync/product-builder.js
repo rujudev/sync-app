@@ -28,12 +28,13 @@ const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
 `;
 
 export function buildDescriptionHtml(model, baseDescription = "", conditions = []) {
-  const hasRefurbished = conditions.some(c => ["refurbished", "used"].includes(String(c).toLowerCase()));
+  const hasRefurbished = conditions.some(c => ["refurbished","used"].includes(String(c).toLowerCase()));
   const cleanBase = baseDescription || "";
+  if (!cleanBase && !hasRefurbished) return null;   // ← nada que escribir
   if (!hasRefurbished) return cleanBase;
   return cleanBase
-    ? `${cleanBase}<br><br>${REFURBISHED_LEGAL_NOTICE_HTML(model)}`
-    : REFURBISHED_LEGAL_NOTICE_HTML(model);
+    ? `${cleanBase}<br>${REFURBISHED_LEGAL_NOTICE_HTML(model)}`
+    : null;                                          // ← NO publicar el legal solo
 }
 
 // Ordena capacidades numéricamente (GB < TB).
@@ -261,7 +262,7 @@ export function sanitizeVariantForGraphQL(v) {
 
 // Construye el objeto de producto completo para la API de Shopify a partir
 // de un grupo de items del feed.
-export function buildShopifyProductObject(group) {
+export function buildShopifyProductObject(group, aiDescription = null) {
   const base = group[0];
   const normalizedBrand = normalizeBrand(base.brand);
   const so = normalizedBrand === 'apple' ? 'iOS' : 'Android';
@@ -302,7 +303,7 @@ export function buildShopifyProductObject(group) {
   const capacities = uniqStrings(validItems.map(v => v.capacity)).filter(Boolean).sort(sortCapacities);
   const colors = uniqStrings(validItems.map(v => v.color));
   const conditions = uniqStrings(validItems.map(v => v.condition));
-  const description = pickGroupDescription(validItems);
+  const description = aiDescription || "";
 
   const tags = uniqStrings([
     normalizedBrand,

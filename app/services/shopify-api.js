@@ -106,6 +106,8 @@ export async function findExistingProduct(admin, group) {
 export async function createShopifyProduct(admin, productObj, groupId = null) {
   const input = { ...productObj };
 
+  if (input.descriptionHtml == null) delete input.descriptionHtml;
+
   if (groupId) {
     const handle = String(groupId).toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 80);
     input.handle = handle;

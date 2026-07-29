@@ -475,6 +475,7 @@ export const GET_PRODUCTS_BY_TAG = `
         node {
           id
           title
+          handle
         }
       }
     }
