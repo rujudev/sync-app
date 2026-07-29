@@ -110,6 +110,7 @@ const etiquetarCampos = (campos = []) =>
 
 export default function Index() {
   const fetcher = useFetcher();
+  const [url, setUrl] = useState("https://www.cosladafon.com/uploads/exportaciones/productos.google_other_image.xml");
   const [syncState, setSyncState] = useState(null); // Estado unificado
 
   const [groupStatus, setGroupStatus] = useState([]);
@@ -941,8 +942,7 @@ export default function Index() {
               </s-stack>
 
               <s-text variant="body-md" tone="subdued">
-                Importa productos desde un feed XML de Google Shopping con procesamiento optimizado en tiempo real.
-                ⚡ <strong>Hasta 6 productos simultáneos</strong> con cache inteligente y rate limiting.
+                Importa productos desde un feed XML de Cosladafón con procesamiento optimizado en tiempo real.
               </s-text>
 
               <fetcher.Form method="post">
@@ -953,8 +953,10 @@ export default function Index() {
                     type="url"
                     placeholder="https://ejemplo.com/feed.xml"
                     required
-                    details="URL del feed XML con los productos de Google Shopping"
+                    details="URL del feed XML con los productos de Cosladafón. Si el contenido tiene la estructura correcta, se procesará automáticamente."
                     disabled={syncState?.status === 'syncing'}
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
                   />
 
                   <s-stack direction="inline" columnGap="large">
