@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@flydotio/litestream": "^1.0.1",
+    "@google/genai": "^2.13.0",
     "@prisma/client": "^6.16.3",
     "@react-router/dev": "^7.9.3",
     "@react-router/fs-routes": "^7.9.3",
