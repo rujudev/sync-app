@@ -1,0 +1,45 @@
+#!/bin/sh
+# pre-push — despliega el proyecto antes de completar el push a main.
+#
+# Lanza scripts/deploy.mjs (fly deploy + shopify app deploy), de modo que cada
+# push a main genera y publica una versión nueva de la app y la tienda se
+# actualiza sola, sin desinstalar ni reinstalar.
+#
+# Si el deploy falla, el push se aborta: así no queda en remoto un commit que
+# no ha llegado a producción.
+#
+# Para saltárselo puntualmente:
+#   SKIP_DEPLOY=1 git push     (o bien: git push --no-verify)
+
+set -e
+
+# Solo despliega si el push va a main; el resto de ramas se suben sin más.
+DEPLOY=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main) ;;
+    *) continue ;;
+  esac
+
+  # Borrado de rama (sha a ceros): nada que desplegar.
+  case "$local_sha" in
+    *[!0]*) DEPLOY=1 ;;
+    *) ;;
+  esac
+done
+
+[ "$DEPLOY" = "1" ] || exit 0
+
+if [ "$SKIP_DEPLOY" = "1" ]; then
+  echo "pre-push: SKIP_DEPLOY=1 → push sin desplegar."
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: no encuentro node en el PATH, no puedo desplegar." >&2
+  echo "          Despliega a mano con 'npm run deploy' o usa 'git push --no-verify'." >&2
+  exit 1
+fi
+
+echo "pre-push: desplegando antes de subir a main..."
+node scripts/deploy.mjs
