@@ -8,7 +8,7 @@ import { pickGroupDescription } from './feed-normalizer.js';
 // ─── Aviso legal que se añade a productos reacondicionados/usados ───
 const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
 <h6>¿Por qué elegir SECONDTECH?</h6>
-<p>En <strong>SecondTech</strong> no solo te ofrecemos tecnología de la más alta calidad, como el <strong>${model}</strong>, sino también una experiencia de compra premium. Nuestro equipo de expertos está siempre listo para asesorarte y ayudarte a encontrar el dispositivo que mejor se adapte a tu ritmo de vida y necesidades. Además, respaldamos cada compra con 1 año de garantía propia para asegurar tu total tranquilidad.</p>
+<p class="tw:leading-normal">En <strong>SecondTech</strong> no solo te ofrecemos tecnología de la más alta calidad, como el <strong>${model}</strong>, sino también una experiencia de compra premium. Nuestro equipo de expertos está siempre listo para asesorarte y ayudarte a encontrar el dispositivo que mejor se adapte a tu ritmo de vida y necesidades. Además, respaldamos cada compra con 1 año de garantía propia para asegurar tu total tranquilidad.</p>
 <h6>Ventajas de comprar tu <strong>${model}</strong> con <strong>SecondTech</strong>:</h6>
 <ul>
   <li><strong>Precios competitivos:</strong> Ofrecemos las tarifas más competitivas del mercado nacional.</li>
@@ -16,15 +16,15 @@ const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
   <li><strong>Confianza y Seguridad:</strong> Todos nuestros productos reacondicionados incluyen 1 año de garantía y nuestra plataforma de pago es 100% segura.</li>
   <li><strong>Ampliación de garantía exclusiva:</strong> Somos los únicos en el sector del reacondicionado que te permiten extender tu garantía*. De hecho, el 97% de nuestros clientes eligen ampliar su garantía. Por algo será.</li>
 </ul>
-<p>¡Tú solo disfruta de tu nuevo dispositivo; de lo demás, nos encargamos nosotros!</p>
-<p>Compra tu <strong>${model}</strong> en <strong>SecondTech</strong> y descubre por qué somos la tienda de tecnología reacondicionada preferida en España.</p>
+<p class="tw:leading-normal">¡Tú solo disfruta de tu nuevo dispositivo; de lo demás, nos encargamos nosotros!</p>
+<p class="tw:leading-normal">Compra tu <strong>${model}</strong> en <strong>SecondTech</strong> y descubre por qué somos la tienda de tecnología reacondicionada preferida en España.</p>
 <h6>Estado de la batería</h6>
-<p>Las baterías de todos nuestros dispositivos reacondicionados son comprobadas por nuestros técnicos expertos. En todos los dispositivos nos aseguramos de que disponen de una salud de batería igual o superior al <strong>85% mínimo</strong>. Por debajo del 85%, siempre las cambiamos.</p>
+<p class="tw:leading-normal">Las baterías de todos nuestros dispositivos reacondicionados son comprobadas por nuestros técnicos expertos. En todos los dispositivos nos aseguramos de que disponen de una salud de batería igual o superior al <strong>85% mínimo</strong>. Por debajo del 85%, siempre las cambiamos.</p>
 <h6>Información legal y garantía</h6>
-<p><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
-<p>Productos y Servicios bajo la ley de garantías. Decreto-ley 7/2021</p>
-<p><strong>1 año de garantía.</strong></p>
-<p>Canon digital: <strong>3,25 €</strong> (incluido en el precio)</p>
+<p class="tw:leading-normal"><strong>IVA INCLUIDO EN EL PRECIO INDICADO POR APLICACIÓN DEL RÉGIMEN ESPECIAL DE BIENES USADOS (Art. 137 y 138 de la Ley 37/1992 de 28 de Diciembre)</strong></p>
+<p class="tw:leading-normal">Productos y Servicios bajo la ley de garantías. Decreto-ley 7/2021</p>
+<p class="tw:leading-normal"><strong>1 año de garantía.</strong></p>
+<p class="tw:leading-normal">Canon digital: <strong>3,25 €</strong> (incluido en el precio)</p>
 `;
 
 export function buildDescriptionHtml(model, baseDescription = "", conditions = []) {

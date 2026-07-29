@@ -136,7 +136,9 @@ const esValorUtil = (v) => {
 //     misma ficha sí sería peor.
 //   - Lista con <strong> para la etiqueta: legible para el usuario, escaneable
 //     por el buscador y compatible con cualquier tema de Shopify.
-//   - Sin atributos, sin estilos en línea y sin clases: el tema es quien manda.
+//   - Sin estilos en línea: el tema es quien manda. La única clase es
+//     tw:leading-normal en los <p>, para que el texto respire (line-height 1.5),
+//     igual que en REFURBISHED_LEGAL_NOTICE_HTML.
 function construirHtml(datos, modelTitle) {
   const specs = [
     ['Pantalla',   datos.pantalla],
@@ -158,7 +160,7 @@ function construirHtml(datos, modelTitle) {
 
   const frase = String(datos.frase || '').trim();
   if (frase.length >= 40) {
-    partes.push(`<p>${destacarModelo(escapeHtml(frase), modelTitle)}</p>`);
+    partes.push(`<p class="tw:leading-normal">${destacarModelo(escapeHtml(frase), modelTitle)}</p>`);
   }
 
   // Sin specs y sin frase no hay nada que publicar.
