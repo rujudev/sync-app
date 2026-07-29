@@ -10,7 +10,9 @@ primary_region = 'cdg'
 
 [env]
   PORT = '3000'
-  SCOPES = 'write_inventory,write_products'
+  # Debe coincidir con [access_scopes].scopes de shopify.app.toml.
+  # scripts/deploy.mjs lo comprueba antes de cada deploy.
+  SCOPES = 'write_products,write_inventory,read_publications,write_publications,read_all_orders,read_products,write_orders'
   SHOPIFY_API_KEY = '14a7d08c14917d8c0615c00574fc01fc'
   SHOPIFY_APP_URL = 'https://sync-app.fly.dev'
 
