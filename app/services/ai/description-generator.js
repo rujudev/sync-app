@@ -1,151 +1,240 @@
 // description-generator.js
-// Genera el copy de producto por modelo. Una llamada por modelo, cacheada
-// para siempre: la descripción depende SOLO del modelo, no del stock ni de
-// las capacidades o condiciones disponibles.
+// Genera la descripción de producto a partir del texto que envía el proveedor.
 //
-// Sin cifras de specs: el catálogo incluye modelos posteriores al corte de
-// conocimiento del modelo de lenguaje (iPhone 17e, Xiaomi 17 Ultra, Galaxy
-// A57…) y cualquier dato técnico concreto sería inventado.
+// La IA NO inventa nada: su trabajo es extraer del texto de origen cuatro
+// características (pantalla, batería, procesador y cámaras) y escribir una
+// frase persuasiva. Lo que no aparezca en el origen, se omite.
+//
+// Devuelve datos estructurados en JSON y el HTML se construye aquí, en código.
+// Así el marcado es válido por construcción, idéntico en todos los productos y
+// con la jerarquía de encabezados bajo nuestro control. Pedirle HTML al modelo
+// es lo que produce etiquetas mal cerradas y estructuras inconsistentes.
 
+import { createHash } from 'crypto';
 import prisma from '../../db.server.js';
 import { logger } from '../config.js';
 import { sendProgress } from '../progress.js';
 import { callJson, isEnabled } from './gemini-client.js';
 import { sanitizeDescriptionHtml } from './sanitize-html.js';
 
-// Súbela para regenerar todo el catálogo a propósito tras cambiar el estilo.
-export const PROMPT_VERSION = 1;
+// Súbela para regenerar todo el catálogo a propósito tras cambiar el estilo,
+// el orden de los bloques o las specs que se extraen.
+export const PROMPT_VERSION = 2;
+
+// Longitud mínima del texto del proveedor para que merezca la pena llamar a la
+// IA. Por debajo no hay specs que extraer.
+const MIN_SOURCE_LENGTH = 200;
 
 const SYSTEM_INSTRUCTION = `
-Escribes fichas de producto para SecondTech, una tienda española de móviles
-reacondicionados y de segunda mano.
+Extraes características técnicas de descripciones de móviles y tablets escritas
+por un proveedor mayorista, para una tienda española de dispositivos
+reacondicionados.
 
-CONTEXTO: recibirás el nombre del modelo y su categoría (móvil, tablet, etc.)
-en el mensaje de usuario. Úsalos tal cual, sin inventar variantes ni datos
-adicionales sobre ellos.
+TU ÚNICA FUENTE ES EL TEXTO QUE RECIBES. No conoces el dispositivo, no puedes
+consultar nada y no debes recordar nada sobre él. Si un dato no está
+literalmente en ese texto, devuelves cadena vacía para ese campo. Inventar una
+cifra es el peor error posible: son fichas de una tienda real y un dato falso
+es un problema legal.
 
-TONO
-- Cercano y directo, español de España, tuteo.
-- Nada de lenguaje de folleto ni superlativos vacíos ("increíble", "te
-  enamorará", "no te dejará indiferente").
-- Frases cortas. Evita el relleno: si no tienes algo concreto que decir,
-  no lo digas con más palabras.
+CAMPOS A EXTRAER (cadena vacía si no aparece en el texto):
 
-PROHIBIDO INCLUIR (nunca los conoces con certeza; un dato falso es un
-problema legal):
-- Pulgadas de pantalla, megapíxeles, mAh de batería, nombre del procesador,
-  RAM, almacenamiento, año de lanzamiento, o cualquier otra cifra técnica.
-- Capacidades disponibles, colores, condición/estado del producto, precio,
-  garantía, plazos de envío, estado de la batería.
-Todo eso se gestiona por separado en la ficha; si lo mencionas, se duplica
-o se contradice con esa información.
+- pantalla:   tamaño, tecnología y tasa de refresco si están.
+              Ej: "6,8 pulgadas Dynamic AMOLED 2X, Quad HD+, 120 Hz"
+- bateria:    capacidad y tipo de carga si están.
+              Ej: "5.000 mAh con carga rápida e inalámbrica"
+- procesador: nombre del chip tal cual aparece. Puedes añadir la RAM si el
+              texto la menciona. Ej: "Snapdragon 8 Gen 2, hasta 12 GB de RAM"
+- camaras:    resolución de la principal y otras ópticas si aparecen.
+              Ej: "Principal de 200 MP con zoom óptico y estabilización"
 
-QUÉ SÍ CONTAR
-- Para quién es este modelo (tipo de usuario, uso diario, fotografía,
-  gaming, autonomía en el uso, etc.) sin cifras.
-- Qué gana el cliente comprando reacondicionado en SecondTech frente a
-  comprar nuevo (ahorro, sostenibilidad, revisión y control de calidad).
-- Sensaciones de uso reales pero genéricas (fluidez, tamaño manejable,
-  cámara fiable) sin prometer specs.
+REGLAS PARA LOS CAMPOS:
+- Copia las cifras EXACTAMENTE como están en el origen. No redondees, no
+  conviertas unidades, no completes con lo que "suele llevar" ese modelo.
+- Frases cortas, sin punto final, sin repetir el nombre del campo dentro del
+  valor (no escribas "Pantalla: 6,8 pulgadas", solo "6,8 pulgadas...").
+- Si el texto menciona el dato de forma vaga y sin cifras ("gran pantalla",
+  "buena batería"), devuelve cadena vacía: no aporta nada.
+- No incluyas almacenamiento ni capacidades: son variantes de la ficha.
 
-FORMATO
-- HTML simple: solo <h4>, <p>, <ul>, <li>, <strong>. Sin atributos, sin
-  enlaces, sin imágenes, sin anidar etiquetas de bloque entre sí.
-- 3 a 5 bloques (mezcla de párrafos y alguna lista si aporta claridad).
-- Extensión orientativa: entre 900 y 1400 caracteres. Prioriza que suene
-  natural y completo antes que ajustarte al carácter exacto.
-- Empieza directamente con el contenido, sin título con el nombre del modelo.
+CAMPO "frase":
+- 2 o 3 líneas, máximo 300 caracteres, en español de España, tuteando.
+- Persuasiva y diferenciadora: para quién es el equipo y por qué merece la pena.
+- Menciona el nombre del modelo UNA vez, de forma natural.
+- Puede apoyarse en lo que dice el texto de origen, pero SIN repetir las cifras
+  ya listadas en los campos anteriores.
+- Prohibido mencionar: precio, garantía, plazos de envío, estado o condición del
+  producto, colores, capacidades y estado de la batería. Todo eso se añade
+  aparte en la ficha y se duplicaría.
+- Nada de superlativos vacíos ("increíble", "no te dejará indiferente").
 
-EJEMPLO (para un smartphone de gama media, mismo tono y estructura que
-debes seguir):
-
-<p>Si buscas un móvil para el día a día sin complicarte con especificaciones
-que no vas a mirar nunca, este es de esos que cumplen sin hacer ruido.
-Aguanta bien el ritmo de cualquier jornada: redes sociales, cámara, WhatsApp
-y navegación sin tirones raros.</p>
-<p>La cámara responde de forma fiable en el uso habitual: fotos de familia,
-viajes o el típico "mándame la ubicación" en el grupo. No es un equipo
-pensado para fotografía profesional, sino para quien quiere sacar buenas
-fotos sin pensar en ajustes.</p>
-<h4>¿Por qué comprarlo reacondicionado en SecondTech?</h4>
-<ul>
-<li>Pasa por un proceso de revisión antes de llegar a tus manos.</li>
-<li>Pagas menos que por un equipo nuevo equivalente.</li>
-<li>Alargas la vida útil de un dispositivo en lugar de generar otro nuevo.</li>
-</ul>
-<p>Un equipo pensado para quien quiere un móvil que simplemente funcione,
-sin sobrepagar por prestaciones que no va a usar.</p>
-
-ANTES DE RESPONDER, comprueba:
-- ¿Hay alguna cifra o dato técnico concreto? Elimínalo.
-- ¿Hay algún color, condición, precio, garantía o plazo mencionado? Elimínalo.
-- ¿Suena a folleto genérico o aporta algo sobre el uso real? Reescribe si
-  suena vacío.
-- ¿Usa solo las etiquetas permitidas, sin atributos?
+Devuelve solo el JSON del esquema, sin explicaciones y sin marcado HTML.
 `.trim();
 
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
-  properties: { html: { type: 'STRING' } },
-  required: ['html'],
+  properties: {
+    pantalla:   { type: 'STRING' },
+    bateria:    { type: 'STRING' },
+    procesador: { type: 'STRING' },
+    camaras:    { type: 'STRING' },
+    frase:      { type: 'STRING' },
+  },
+  required: ['pantalla', 'bateria', 'procesador', 'camaras', 'frase'],
 };
 
-async function generateOne(modelTitle, brand) {
-  const prompt =
-    `Escribe la descripción para: ${modelTitle}` +
-    (brand ? ` (marca: ${brand})` : '') + '.';
+// Hash del texto de origen: si el proveedor cambia su descripción, se regenera.
+const hashSource = (text) =>
+  createHash('sha256').update(String(text || '')).digest('hex').slice(0, 32);
 
-  const out = await callJson(prompt, RESPONSE_SCHEMA, {
+// El contenido de los campos es texto plano del modelo y va incrustado en HTML.
+// Escaparlo garantiza marcado válido aunque venga con &, < o comillas.
+const escapeHtml = (s) =>
+  String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+// Un valor sirve si tiene sustancia. Descarta los "no disponible" y variantes
+// que el modelo cuela a veces en lugar de la cadena vacía que se le pide.
+const esValorUtil = (v) => {
+  const t = String(v || '').trim();
+  if (t.length < 3 || t.length > 200) return false;
+  return !/^(n\/?a|no|ninguno|no disponible|no especificad|desconocid|sin dato)/i.test(t);
+};
+
+// Construye el HTML de los bloques 1 y 2. El bloque 3 (texto común de
+// SecondTech) lo añade buildDescriptionHtml en product-builder.
+//
+// Notas de SEO y accesibilidad:
+//   - Se usa <h6>, el mismo nivel que emplea REFURBISHED_LEGAL_NOTICE_HTML en
+//     product-builder, para que toda la descripción sea coherente. El nivel del
+//     encabezado apenas influye en SEO (lo que cuenta es que el texto sea
+//     descriptivo e incluya el modelo); mezclar niveles distintos dentro de la
+//     misma ficha sí sería peor.
+//   - Lista con <strong> para la etiqueta: legible para el usuario, escaneable
+//     por el buscador y compatible con cualquier tema de Shopify.
+//   - Sin atributos, sin estilos en línea y sin clases: el tema es quien manda.
+function construirHtml(datos, modelTitle) {
+  const specs = [
+    ['Pantalla',   datos.pantalla],
+    ['Batería',    datos.bateria],
+    ['Procesador', datos.procesador],
+    ['Cámaras',    datos.camaras],
+  ].filter(([, v]) => esValorUtil(v));
+
+  const partes = [];
+
+  if (specs.length) {
+    partes.push(`<h6>Características principales del ${escapeHtml(modelTitle)}</h6>`);
+    partes.push('<ul>');
+    for (const [etiqueta, valor] of specs) {
+      partes.push(`<li><strong>${etiqueta}:</strong> ${escapeHtml(String(valor).trim())}</li>`);
+    }
+    partes.push('</ul>');
+  }
+
+  const frase = String(datos.frase || '').trim();
+  if (frase.length >= 40) {
+    partes.push(`<p>${escapeHtml(frase)}</p>`);
+  }
+
+  // Sin specs y sin frase no hay nada que publicar.
+  if (!specs.length && frase.length < 40) return null;
+
+  return partes.join('\n');
+}
+
+async function generarDatos(modelTitle, brand, sourceDescription) {
+  const prompt =
+    `Modelo: ${modelTitle}${brand ? ` (marca: ${brand})` : ''}\n\n` +
+    `Descripción del proveedor de la que debes extraer los datos:\n` +
+    `"""\n${String(sourceDescription).slice(0, 6000)}\n"""`;
+
+  return callJson(prompt, RESPONSE_SCHEMA, {
     systemInstruction: SYSTEM_INSTRUCTION,
     label: 'descripciones',
   });
-
-  return sanitizeDescriptionHtml(out?.html);
 }
 
-// Devuelve el HTML de la descripción de un modelo, generándolo solo si no
-// está ya en caché.
+// Devuelve el HTML de los bloques 1 y 2 para un modelo, generándolo solo si no
+// está en caché o si el texto del proveedor ha cambiado.
 //
 // Se llama de forma perezosa desde processGroup, no como pre-pasada: así la
 // latencia de la IA se solapa con el trabajo de Shopify y los productos
-// empiezan a sincronizarse de inmediato. Como pre-pasada bloqueaba la sync
-// varios minutos sin tocar nada, y parecía colgada.
+// empiezan a sincronizarse de inmediato.
 //
 // Devolver null NUNCA rompe nada: buildShopifyProductObject dejará
 // descriptionHtml a null, se omitirá del payload, y no se tocará lo que ya
 // hubiera en Shopify.
-export async function ensureDescription(modelKey, modelTitle, brand = '') {
-  if (!modelKey || !modelTitle) return null;
+//
+// Toda salida emite un evento. Si alguna se fuera en silencio, en la UI no
+// habría forma de distinguir "todo servido de caché" de "se saltaron N
+// productos sin avisar".
+export async function ensureDescription(modelKey, modelTitle, brand = '', sourceDescription = '') {
+  const emitir = (estado, motivo) =>
+    sendProgress({ type: 'ai-description', modelKey, modelTitle, estado, ...(motivo ? { motivo } : {}) });
 
-  // ── 1. Caché ──────────────────────────────────────────────────────────────
-  try {
-    const row = await prisma.productDescription.findUnique({ where: { modelKey } });
-    if (row?.html && row.promptVersion === PROMPT_VERSION) {
-      sendProgress({ type: "ai-description", modelKey, modelTitle, estado: "cache" });
-      return row.html;
-    }
-  } catch (err) {
-    logger.warn(`⚠️ [IA/descripciones] Caché no disponible: ${err?.message || err}`);
+  if (!modelKey || !modelTitle) {
+    emitir('omitida', 'sin modelo');
     return null;
   }
 
-  if (!isEnabled()) return null;
+  const fuente = String(sourceDescription || '').trim();
+  const sourceHash = hashSource(fuente);
 
-  // ── 2. Generar ────────────────────────────────────────────────────────────
-  sendProgress({ type: "ai-description", modelKey, modelTitle, estado: "generando" });
-  const html = await generateOne(modelTitle, brand);
+  // ── 1. Caché ──────────────────────────────────────────────────────────────
+  let existente = null;
+  try {
+    existente = await prisma.productDescription.findUnique({ where: { modelKey } });
+    if (existente?.html &&
+        existente.promptVersion === PROMPT_VERSION &&
+        existente.sourceHash === sourceHash) {
+      emitir('cache');
+      return existente.html;
+    }
+  } catch (err) {
+    logger.warn(`⚠️ [IA/descripciones] Caché no disponible: ${err?.message || err}`);
+    emitir('omitida', 'caché no disponible');
+    return null;
+  }
+
+  // ── 2. Sin material de origen no se puede extraer nada ────────────────────
+  if (fuente.length < MIN_SOURCE_LENGTH) {
+    logger.warn(`⚠️ [IA/descripciones] "${modelTitle}": el proveedor no envía descripción utilizable (${fuente.length} chars).`);
+    // Si ya había una descripción guardada de una pasada anterior, se conserva
+    // en lugar de dejar el producto sin nada.
+    emitir(existente?.html ? 'cache' : 'omitida', existente?.html ? undefined : 'sin texto del proveedor');
+    return existente?.html || null;
+  }
+
+  if (!isEnabled()) {
+    emitir(existente?.html ? 'cache' : 'omitida', existente?.html ? undefined : 'sin API key');
+    return existente?.html || null;
+  }
+
+  // ── 3. Generar ────────────────────────────────────────────────────────────
+  emitir('generando');
+  const datos = await generarDatos(modelTitle, brand, fuente);
+
+  if (!datos) {
+    emitir('fallida', 'sin respuesta de la IA');
+    return existente?.html || null;
+  }
+
+  const html = sanitizeDescriptionHtml(construirHtml(datos, modelTitle));
 
   if (!html) {
-    logger.warn(`⚠️ [IA/descripciones] Sin resultado válido para "${modelTitle}"`);
-    sendProgress({ type: "ai-description", modelKey, modelTitle, estado: "fallida" });
-    return null;
+    logger.warn(`⚠️ [IA/descripciones] "${modelTitle}": no se extrajo ninguna característica utilizable.`);
+    emitir('fallida', 'sin datos extraíbles');
+    return existente?.html || null;
   }
 
   try {
     await prisma.productDescription.upsert({
       where:  { modelKey },
-      update: { html, promptVersion: PROMPT_VERSION },
-      create: { modelKey, html, promptVersion: PROMPT_VERSION },
+      update: { html, promptVersion: PROMPT_VERSION, sourceHash },
+      create: { modelKey, html, promptVersion: PROMPT_VERSION, sourceHash },
     });
   } catch (err) {
     // Se ha generado bien pero no se ha podido persistir: se devuelve igual
@@ -153,7 +242,8 @@ export async function ensureDescription(modelKey, modelTitle, brand = '') {
     logger.warn(`⚠️ [IA/descripciones] No se pudo guardar "${modelKey}": ${err?.message || err}`);
   }
 
-  logger.success(`📝 [IA/descripciones] Generada para "${modelTitle}"`);
-  sendProgress({ type: "ai-description", modelKey, modelTitle, estado: "generada" });
+  const extraidas = ['pantalla', 'bateria', 'procesador', 'camaras'].filter(k => esValorUtil(datos[k]));
+  logger.success(`📝 [IA/descripciones] "${modelTitle}" → ${extraidas.length}/4 specs (${extraidas.join(', ') || 'ninguna'})`);
+  emitir('generada');
   return html;
 }

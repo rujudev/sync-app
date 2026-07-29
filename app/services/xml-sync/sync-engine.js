@@ -6,7 +6,7 @@ import { adminGraphql, logger } from '../config.js';
 import { sendProgress } from '../progress.js';
 import { normalizeString } from '../../../utils/normalize-utils.js';
 import { parseXmlItems } from './xml-parser.js';
-import { buildCacheKey, normalizeFeedItem, groupByModelKey, isSyncableItem } from './feed-normalizer.js';
+import { buildCacheKey, normalizeFeedItem, groupByModelKey, isSyncableItem, pickGroupDescription } from './feed-normalizer.js';
 import { buildShopifyProductObject, convertVariantForShopify, sanitizeVariantForGraphQL, findVariant, variantNeedsUpdate, isDuplicateVariant, normalizeOptions, buildOptionsKeyFromSelectedOptions, buildOptionsKeyFromOptionValues } from './product-builder.js';
 import { buildImageMapByMatching, getProductMediaWithRetry, getImageDimensions, isImageSmall, extractBaseName } from '../media-utils.js';
 import { findExistingProduct, createShopifyProduct, updateShopifyProduct, getAllProductVariants, setProductMetafields, ensureProductMetafieldDefinitions, syncProductOptions } from '../shopify-api.js';
@@ -586,14 +586,17 @@ async function processGroup(admin, groupId, groupItems) {
     logger.detail(`[PUBLICACIÓN] Publicando en ${publicationsIDs.length} canal(es).`);
   }
 
-  // Descripción por IA, perezosa y cacheada por modelKey. Devuelve null si no
-  // hay clave, si falla o si el resultado no pasa el saneado; en ese caso
-  // buildShopifyProductObject deja descriptionHtml a null y se omite del
-  // payload, sin tocar la descripción que ya tuviera el producto en Shopify.
+  // Descripción por IA, perezosa y cacheada por modelKey + hash del texto de
+  // origen. La IA extrae las specs del texto del proveedor, no las inventa, así
+  // que hay que pasárselo. Devuelve null si no hay clave, si falla o si no se
+  // extrajo nada utilizable; en ese caso buildShopifyProductObject deja
+  // descriptionHtml a null y se omite del payload, sin tocar la descripción que
+  // ya tuviera el producto en Shopify.
   const aiDescription = await ensureDescription(
     groupId,
     groupItems[0]?.modelTitle,
-    groupItems[0]?.brand
+    groupItems[0]?.brand,
+    pickGroupDescription(groupItems)
   );
 
   const productObj = buildShopifyProductObject(groupItems, aiDescription);
