@@ -94,6 +94,20 @@ export const loader = async ({ request }) => {
   });
 };
 
+// Nombres legibles para los campos que devuelve computeProductUpdate. Sin esto
+// la UI muestra el identificador del código ("descriptionHtml", "productOptions"),
+// que no significa nada para quien gestiona la tienda.
+const ETIQUETAS_CAMPO = {
+  title:           "Título",
+  vendor:          "Marca",
+  descriptionHtml: "Descripción",
+  tags:            "Etiquetas",
+  productOptions:  "Opciones",
+};
+
+const etiquetarCampos = (campos = []) =>
+  campos.map(c => ETIQUETAS_CAMPO[c] || c);
+
 export default function Index() {
   const fetcher = useFetcher();
   const [syncState, setSyncState] = useState(null); // Estado unificado
@@ -446,7 +460,7 @@ export default function Index() {
     es.addEventListener("product_updated", e => {
       const d = JSON.parse(e.data);
       const changed = Array.isArray(d.changedFields) ? d.changedFields : [];
-      const fieldsText = changed.length ? changed.join(", ") : "sin cambios";
+      const fieldsText = changed.length ? etiquetarCampos(changed).join(", ") : "sin cambios";
       const stepText = d.noChanges
         ? `Producto sin cambios: ${d.groupId || d.productId}`
         : `Producto actualizado (${fieldsText}): ${d.groupId || d.productId}`;
@@ -839,13 +853,15 @@ export default function Index() {
     es.addEventListener("ai-description", e => {
       const d = JSON.parse(e.data);
       setAiStatus(prev => {
-        const c = prev?.descripciones || { desdeCache: 0, generadas: 0, fallidas: 0 };
+        const c = prev?.descripciones || { desdeCache: 0, generadas: 0, fallidas: 0, omitidas: 0 };
         return {
           ...(prev || {}),
           descripciones: {
             desdeCache: c.desdeCache + (d.estado === "cache" ? 1 : 0),
             generadas:  c.generadas  + (d.estado === "generada" ? 1 : 0),
             fallidas:   c.fallidas   + (d.estado === "fallida" ? 1 : 0),
+            omitidas:   c.omitidas   + (d.estado === "omitida" ? 1 : 0),
+            motivo:     d.estado === "omitida" ? d.motivo : c.motivo,
             generando:  d.estado === "generando" ? d.modelTitle : null,
           },
         };
@@ -1312,8 +1328,10 @@ export default function Index() {
                 {aiStatus.descripciones && (
                   <s-text variant="body-sm" tone="subdued">
                     📝 Descripciones: {aiStatus.descripciones.desdeCache} de caché ·
-                    {" "}{aiStatus.descripciones.generadas} generadas ·
-                    {" "}{aiStatus.descripciones.fallidas} fallidas
+                    {" "}{aiStatus.descripciones.generadas} generadas
+                    {aiStatus.descripciones.fallidas > 0 && ` · ${aiStatus.descripciones.fallidas} fallidas`}
+                    {aiStatus.descripciones.omitidas > 0 &&
+                      ` · ${aiStatus.descripciones.omitidas} omitidas (${aiStatus.descripciones.motivo})`}
                   </s-text>
                 )}
 
@@ -1513,15 +1531,32 @@ export default function Index() {
                             </s-text>
                           </s-stack>
 
-                          {(g.productNoChanges || (g.productChangedFields || []).length > 0) && (
-                            <s-stack direction="inline" columnGap="small" blockSize="auto" alignItems="center">
-                              <s-badge tone={g.productNoChanges ? "subdued" : "info"} size="small">
-                                {g.productNoChanges
-                                  ? "📝 Producto sin cambios"
-                                  : `📝 Producto actualizado: ${(g.productChangedFields || []).join(', ')}`}
-                              </s-badge>
-                            </s-stack>
-                          )}
+                          {(g.productNoChanges || (g.productChangedFields || []).length > 0) && (() => {
+                            const campos = g.productChangedFields || [];
+                            const descripcionCambiada = campos.includes("descriptionHtml");
+                            const resto = etiquetarCampos(campos.filter(c => c !== "descriptionHtml"));
+
+                            return (
+                              <s-stack direction="inline" columnGap="small" blockSize="auto" alignItems="center">
+                                {g.productNoChanges ? (
+                                  <s-badge tone="subdued" size="small">📝 Producto sin cambios</s-badge>
+                                ) : (
+                                  <>
+                                    {/* La descripción va en su propio badge: es el campo
+                                        que regenera la IA y el que más interesa seguir. */}
+                                    {descripcionCambiada && (
+                                      <s-badge tone="success" size="small">📝 Descripción actualizada</s-badge>
+                                    )}
+                                    {resto.length > 0 && (
+                                      <s-badge tone="info" size="small">
+                                        ✏️ Actualizado: {resto.join(', ')}
+                                      </s-badge>
+                                    )}
+                                  </>
+                                )}
+                              </s-stack>
+                            );
+                          })()}
 
                           <s-divider />
 
