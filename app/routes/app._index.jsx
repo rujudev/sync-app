@@ -104,6 +104,7 @@ export default function Index() {
   // Estado de la reconciliación final de huérfanos (productos con tag
   // "cosladafon" cuyo modelo ya no aparece en el feed y se eliminan).
   const [reconcileStatus, setReconcileStatus] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
 
   // Envía la señal de cancelación al backend sin borrar los datos mostrados.
   // El estado se limpia al inicio de una nueva sincronización (sync-start).
@@ -310,6 +311,7 @@ export default function Index() {
       setVariantStatusByGroup({});
       setProductsWithSmallImages([]);
       setReconcileStatus(null);
+      setAiStatus(null);
 
       setSyncState(prev => ({
         ...prev,
@@ -808,6 +810,48 @@ export default function Index() {
       }));
     });
 
+    es.addEventListener("ai-identity", e => {
+      const d = JSON.parse(e.data);
+      setAiStatus(prev => ({ ...(prev || {}), identidad: d }));
+    });
+
+    es.addEventListener("ai-resolve-start", e => {
+      const d = JSON.parse(e.data);
+      setAiStatus(prev => ({ ...(prev || {}), modelos: { enCurso: true, total: d.total || 0 } }));
+    });
+
+    es.addEventListener("ai-resolve-progress", e => {
+      const d = JSON.parse(e.data);
+      setAiStatus(prev => ({
+        ...(prev || {}),
+        modelos: { ...(prev?.modelos || {}), enCurso: true, lote: d.lote, totalLotes: d.totalLotes },
+      }));
+    });
+
+    es.addEventListener("ai-resolve-end", e => {
+      const d = JSON.parse(e.data);
+      setAiStatus(prev => ({ ...(prev || {}), modelos: { ...d, enCurso: false } }));
+    });
+
+    // Las descripciones llegan de una en una desde processGroup, así que aquí
+    // se acumulan. setAiStatus(null) en "sync-start" evita que los contadores
+    // se arrastren entre sincronizaciones sucesivas.
+    es.addEventListener("ai-description", e => {
+      const d = JSON.parse(e.data);
+      setAiStatus(prev => {
+        const c = prev?.descripciones || { desdeCache: 0, generadas: 0, fallidas: 0 };
+        return {
+          ...(prev || {}),
+          descripciones: {
+            desdeCache: c.desdeCache + (d.estado === "cache" ? 1 : 0),
+            generadas:  c.generadas  + (d.estado === "generada" ? 1 : 0),
+            fallidas:   c.fallidas   + (d.estado === "fallida" ? 1 : 0),
+            generando:  d.estado === "generando" ? d.modelTitle : null,
+          },
+        };
+      });
+    });
+
     es.addEventListener("sync-end", () => {
       setSyncState(prev => ({
         ...prev,
@@ -921,6 +965,43 @@ export default function Index() {
                         }}
                       >
                         🎨 Obtener colores existentes
+                      </s-button>
+                    )}
+                    {import.meta.env.MODE === 'development' && (
+                      <s-button
+                        variant="secondary"
+                        size="large"
+                        type="button"
+                        onClick={async () => {
+                          const xmlUrl = prompt("URL del feed XML:");
+                          if (!xmlUrl) return;
+
+                          const apply = confirm(
+                            "¿APLICAR los cambios?\n\n" +
+                            "Aceptar = escribe en la base de datos\n" +
+                            "Cancelar = solo simula (recomendado la primera vez)"
+                          );
+
+                          const res = await fetch("/api/seed-model-cache", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ xmlUrl, apply })
+                          });
+                          const data = await res.json();
+                          console.log("🌱 SEED MODEL CACHE:", data);
+                          console.table(data.modelosFragmentados || []);
+                          console.table(data.productosVivosSinTituloEnFeed || []);
+                          alert(
+                            `${data.dryRun ? "SIMULACIÓN" : "APLICADO"}\n\n` +
+                            `Productos vivos en Shopify: ${data.productosVivosEnShopify}\n` +
+                            `Títulos distintos en feed: ${data.titulosDistintosEnFeed}\n` +
+                            `Títulos a congelar: ${data.titulosACongelar}\n` +
+                            `Escritos: ${data.escritos}\n\n` +
+                            `Detalle completo en la consola.`
+                          );
+                        }}
+                      >
+                        🌱 Sembrar caché de modelos
                       </s-button>
                     )}
                     {syncState?.status === 'syncing' && (
@@ -1184,6 +1265,100 @@ export default function Index() {
           </s-section>
         )}
 
+        {aiStatus && (
+          <s-section>
+            <s-card padding="base">
+              <s-stack gap="base">
+                <s-text variant="heading-sm" fontWeight="semibold">🤖 Procesamiento con IA</s-text>
+
+                {aiStatus.identidad && (
+                  <s-text variant="body-sm" tone="subdued">
+                    🔒 Identidad protegida: {aiStatus.identidad.productosVivos} productos publicados ·
+                    {" "}{aiStatus.identidad.congeladosAhora} títulos congelados en esta sync ·
+                    {" "}{aiStatus.identidad.yaEnCache} ya en caché
+                  </s-text>
+                )}
+
+                {aiStatus.modelos?.enCurso && (
+                  <s-stack direction="inline" alignment="center" gap="100">
+                    <s-spinner size="small" />
+                    <s-text variant="caption" tone="subdued">
+                      Resolviendo modelos
+                      {aiStatus.modelos.totalLotes
+                        ? ` — lote ${aiStatus.modelos.lote}/${aiStatus.modelos.totalLotes}`
+                        : ` (${aiStatus.modelos.total} títulos)`}…
+                    </s-text>
+                  </s-stack>
+                )}
+
+                {aiStatus.modelos && !aiStatus.modelos.enCurso && (
+                  <s-text variant="body-sm" tone="subdued">
+                    🔤 Modelos: {aiStatus.modelos.desdeCache} de caché ·
+                    {" "}{aiStatus.modelos.resueltos} nuevos ·
+                    {" "}{aiStatus.modelos.descartados} descartados
+                    {aiStatus.modelos.discrepan > 0 && ` · ${aiStatus.modelos.discrepan} discrepan del extractor`}
+                  </s-text>
+                )}
+
+                {aiStatus.descripciones?.generando && (
+                  <s-stack direction="inline" alignment="center" gap="100">
+                    <s-spinner size="small" />
+                    <s-text variant="caption" tone="subdued">
+                      Escribiendo descripción de {aiStatus.descripciones.generando}…
+                    </s-text>
+                  </s-stack>
+                )}
+
+                {aiStatus.descripciones && (
+                  <s-text variant="body-sm" tone="subdued">
+                    📝 Descripciones: {aiStatus.descripciones.desdeCache} de caché ·
+                    {" "}{aiStatus.descripciones.generadas} generadas ·
+                    {" "}{aiStatus.descripciones.fallidas} fallidas
+                  </s-text>
+                )}
+
+                {/* Se separa por acción requerida: solo los fragmentos que ya
+                    tienen producto publicado obligan a intervenir a mano. El
+                    resto los resuelve la IA al crearlos y son informativos. */}
+                {aiStatus.identidad?.fragmentaciones?.length > 0 && (() => {
+                  const requierenAccion = aiStatus.identidad.fragmentaciones.filter(f => f.fragmentoVivo);
+                  const seCorrigenSolos = aiStatus.identidad.fragmentaciones.filter(f => !f.fragmentoVivo);
+
+                  return (
+                    <s-stack gap="200">
+                      {requierenAccion.length > 0 && (
+                        <s-banner tone="warning">
+                          <s-stack gap="200">
+                            <s-text variant="body-sm">
+                              ⚠️ {requierenAccion.length} producto(s) publicados están duplicados por un
+                              nombre mal extraído del feed. Hay que fusionarlos a mano en Shopify: mueve
+                              las variantes al producto correcto y borra el sobrante.
+                            </s-text>
+                            {requierenAccion.map((f, i) => (
+                              <s-text key={i} variant="caption">
+                                🔴 <strong>{f.fragmento}</strong> debería ser <strong>{f.base}</strong>
+                              </s-text>
+                            ))}
+                          </s-stack>
+                        </s-banner>
+                      )}
+
+                      {seCorrigenSolos.length > 0 && (
+                        <s-text variant="caption" tone="subdued">
+                          ℹ️ {seCorrigenSolos.length} nombre(s) mal extraídos detectados en el feed.
+                          No tienen producto publicado, así que la IA los resolverá al crearlos.
+                          No requieren acción.
+                        </s-text>
+                      )}
+                    </s-stack>
+                  );
+                })()}
+              </s-stack>
+            </s-card>
+          </s-section>
+        )}
+
+
         {/* PRODUCTOS ELIMINADOS: modelos huérfanos que ya no están en el feed.
             Se muestra por encima de la tabla de procesados; solo el modelo. */}
         {reconcileStatus && (
@@ -1199,8 +1374,8 @@ export default function Index() {
                     <s-badge
                       tone={
                         reconcileStatus.phase === "error" ? "critical" :
-                        reconcileStatus.phase === "skipped" ? "warning" :
-                        (reconcileStatus.deleted?.length ? "critical" : "neutral")
+                          reconcileStatus.phase === "skipped" ? "warning" :
+                            (reconcileStatus.deleted?.length ? "critical" : "neutral")
                       }
                       size="small"
                     >
