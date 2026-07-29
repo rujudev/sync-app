@@ -12,9 +12,9 @@ const REFURBISHED_LEGAL_NOTICE_HTML = (model) => `
 <h6>Ventajas de comprar tu <strong>${model}</strong> con <strong>SecondTech</strong>:</h6>
 <ul>
   <li><strong>Precios competitivos:</strong> Ofrecemos las tarifas más competitivas del mercado nacional.</li>
-  <li><strong>Atención 100% personalizada:</strong> Nos olvidamos de los bots; nuestro equipo resuelve tus dudas de forma directa y humana. Bien por WhatsApp, teléfono o mediante chat directo en nuestra web.</li>
+  <li><strong>Atención 100% personalizada:</strong> Nos olvidamos de los bots; nuestro equipo resuelve tus dudas de forma directa y humana. Bien por WhatsApp, teléfono o mediante chat directo en nuestra web en horario comercial.</li>
   <li><strong>Confianza y Seguridad:</strong> Todos nuestros productos reacondicionados incluyen 1 año de garantía y nuestra plataforma de pago es 100% segura.</li>
-  <li><strong>Ampliación de garantía exclusiva:</strong> Somos los únicos en el sector del reacondicionado que te permiten extender tu garantía*. De hecho, el 94% de nuestros clientes eligen ampliar su garantía. Por algo será.</li>
+  <li><strong>Ampliación de garantía exclusiva:</strong> Somos los únicos en el sector del reacondicionado que te permiten extender tu garantía*. De hecho, el 97% de nuestros clientes eligen ampliar su garantía. Por algo será.</li>
 </ul>
 <p>¡Tú solo disfruta de tu nuevo dispositivo; de lo demás, nos encargamos nosotros!</p>
 <p>Compra tu <strong>${model}</strong> en <strong>SecondTech</strong> y descubre por qué somos la tienda de tecnología reacondicionada preferida en España.</p>
