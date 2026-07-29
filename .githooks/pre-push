@@ -15,7 +15,8 @@ set -e
 
 # Solo despliega si el push va a main; el resto de ramas se suben sin más.
 DEPLOY=0
-while read -r _local_ref local_sha remote_ref _remote_sha; do
+RANGE=""
+while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/main) ;;
     *) continue ;;
@@ -23,7 +24,12 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
 
   # Borrado de rama (sha a ceros): nada que desplegar.
   case "$local_sha" in
-    *[!0]*) DEPLOY=1 ;;
+    *[!0]*)
+      DEPLOY=1
+      # Rango que se está subiendo: deploy.mjs lo usa para decidir si hace
+      # falta publicar una versión nueva en Shopify o basta con Fly.
+      RANGE="$remote_sha $local_sha"
+      ;;
     *) ;;
   esac
 done
@@ -42,4 +48,4 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 echo "pre-push: desplegando antes de subir a main..."
-node scripts/deploy.mjs
+DEPLOY_PUSH_RANGE="$RANGE" node scripts/deploy.mjs

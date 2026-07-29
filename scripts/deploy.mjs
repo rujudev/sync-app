@@ -29,23 +29,34 @@ function read(file) {
   return readFileSync(path.join(ROOT, file), 'utf8');
 }
 
+// Resultado completo de un comando de git, para poder distinguir "ha fallado"
+// de "no ha devuelto nada".
+function gitRaw(args) {
+  const res = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
+  return { ok: res.status === 0, out: (res.stdout || '').trim() };
+}
+
 // Salida de un comando de git, o "" si falla (no queremos romper el deploy por
 // no poder leer metadatos).
 function git(args) {
-  const res = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
-  return res.status === 0 ? res.stdout.trim() : '';
+  return gitRaw(args).out;
 }
 
 function run(command, args, extraEnv = {}) {
   // shell: true para que en Windows se resuelvan los shims .cmd de fly/shopify.
-  const res = spawnSync(command, args, {
+  // Se pasa la línea entera como un string en vez de (comando, args), porque esa
+  // segunda forma combinada con shell: true está deprecada en Node (DEP0190) y
+  // ensucia la salida de cada deploy con un warning. Nuestros argumentos no
+  // llevan espacios, pero se entrecomillan por si algún día los llevan.
+  const line = [command, ...args.map((a) => (/\s/.test(a) ? `"${a}"` : a))].join(' ');
+  const res = spawnSync(line, {
     cwd: ROOT,
     stdio: 'inherit',
     shell: true,
     env: { ...process.env, ...extraEnv },
   });
-  if (res.error) fail(`No se ha podido ejecutar "${command}": ${res.error.message}`);
-  if (res.status !== 0) fail(`"${command} ${args.join(' ')}" ha terminado con código ${res.status}.`);
+  if (res.error) fail(`No se ha podido ejecutar "${line}": ${res.error.message}`);
+  if (res.status !== 0) fail(`"${line}" ha terminado con código ${res.status}.`);
 }
 
 // ─── 1. Scopes en sincronía ─────────────────────────────────────────────────
@@ -109,19 +120,58 @@ function sourceControlUrl(sha) {
   return repo.startsWith('https://github.com/') ? `${repo}/commit/${sha}` : null;
 }
 
+// ─── 3. ¿Hace falta una versión nueva en Shopify? ───────────────────────────
+// En la versión de Shopify solo vive la configuración de la app: scopes,
+// webhooks, URLs y extensiones. El código vive en Fly y la tienda lo carga en
+// cada visita, así que un push que solo toca código no necesita versión: se
+// crearía idéntica a la anterior y solo ensucia el listado de versiones del
+// Partner Dashboard.
+//
+// El hook pre-push pasa en DEPLOY_PUSH_RANGE los dos shas que se están
+// subiendo. Sin rango (deploy lanzado a mano) se despliega siempre, que es lo
+// que uno espera al pedirlo explícitamente.
+const CONFIG_PATHS = ['shopify.app.toml', 'shopify.web.toml', 'extensions'];
+
+function configTouched() {
+  const range = process.env.DEPLOY_PUSH_RANGE;
+  if (!range) return true;
+
+  const [before, after] = range.trim().split(/\s+/);
+  if (!before || !after) return true;
+
+  // Rama nueva (sha a ceros) o un commit que no tenemos en local: no hay con
+  // qué comparar, así que desplegamos por seguridad.
+  if (/^0+$/.test(before)) return true;
+  if (!gitRaw(['cat-file', '-e', `${before}^{commit}`]).ok) return true;
+
+  const diff = gitRaw(['diff', '--name-only', before, after, '--', ...CONFIG_PATHS]);
+  if (!diff.ok) return true;
+
+  return diff.out !== '';
+}
+
 // ─── Deploy ─────────────────────────────────────────────────────────────────
 
 checkScopes();
 
 const sha = git(['rev-parse', '--short', 'HEAD']);
 const subject = git(['log', '-1', '--pretty=%s']);
+// fly deploy empaqueta el working directory, no el commit: con cambios sin
+// commitear acabaría en producción código que no está en el repositorio, y la
+// versión de Shopify quedaría enlazada a un commit que no es lo desplegado.
 const dirty = git(['status', '--porcelain']);
 
-if (dirty) {
-  console.warn(
-    '\n\x1b[33m⚠ Hay cambios sin commitear: fly deploy sube el código del disco,' +
-      '\n  no el del último commit, así que lo que se despliegue no coincidirá' +
-      '\n  exactamente con el commit registrado en la versión.\x1b[0m',
+if (dirty && process.env.ALLOW_DIRTY !== '1') {
+  fail(
+    [
+      'Hay cambios sin commitear y fly deploy sube el código del disco, no el',
+      'del último commit: lo desplegado no coincidiría con el repositorio.',
+      '',
+      dirty,
+      '',
+      'Commitea (o guarda en stash) y repite. Si de verdad quieres desplegar el',
+      'disco tal cual: ALLOW_DIRTY=1 npm run deploy',
+    ].join('\n'),
   );
 }
 
@@ -134,6 +184,11 @@ if (process.env.SKIP_FLY === '1') {
 
 if (process.env.SKIP_SHOPIFY === '1') {
   log('SKIP_SHOPIFY=1 → me salto shopify app deploy');
+} else if (!configTouched()) {
+  log(
+    'Este push no toca la configuración de la app, así que no hace falta\n' +
+      '  versión nueva: la tienda ya carga el código recién desplegado en Fly.',
+  );
 } else {
   const version = versionName(sha);
   const url = sourceControlUrl(sha);
@@ -149,7 +204,7 @@ if (process.env.SKIP_SHOPIFY === '1') {
   run('shopify', args, subject ? { SHOPIFY_FLAG_MESSAGE: subject } : {});
 }
 
-console.log('\n\x1b[32m✔ Deploy completado. La tienda ya tiene la versión nueva.\x1b[0m');
+console.log('\n\x1b[32m✔ Deploy completado. La tienda ya está sirviendo este código.\x1b[0m');
 console.log(
   '\x1b[2m  Si has añadido scopes, la tienda pedirá aceptar los permisos nuevos\n' +
     '  al abrir la app. No hace falta desinstalarla.\x1b[0m\n',
