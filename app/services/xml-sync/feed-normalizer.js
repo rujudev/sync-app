@@ -123,13 +123,24 @@ export function cleanFeedDescription(raw = "") {
     .trim();
 }
 
-// Convierte un item crudo del feed en un objeto normalizado listo para agrupar.
-export function normalizeFeedItem(item) {
+// ¿Este item del feed puede llegar a convertirse en variante de un producto?
+// Misma regla que aplica normalizeFeedItem al descartar. Se expone aparte para
+// que las fases previas (resolución por IA) no gasten trabajo en items que se
+// van a tirar.
+export function isSyncableItem(item) {
   const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
+  if (String(get("id") || "").includes("TEST")) return false;
+  const availability = String(get("availability") || "").trim().toLowerCase().replace(/[\s_]/g, "");
+  return availability !== "outofstock";
+}
 
-  const id = String(get("id") || "");
-  if (id.includes("TEST")) return null;
+export function buildCacheKey(item) {
+  const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
+  return `${normalizeBrand(get("brand"))}||${String(get("title") || "").trim()}`;
+}
 
+export function resolveModelDeterministic(item) {
+  const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
   const title = String(get("title") || "");
   const brand = String(get("brand") || "").trim();
 
@@ -161,6 +172,22 @@ export function normalizeFeedItem(item) {
     if (!/\bFE\b/i.test(modelTitle)) modelTitle = `${modelTitle} FE`;
     if (!modelKey.split(/\s+/).includes('fe')) modelKey = `${modelKey} fe`;
   }
+
+  return { modelTitle, modelKey, capacity, color };
+}
+
+// Convierte un item crudo del feed en un objeto normalizado listo para agrupar.
+export function normalizeFeedItem(item, resolution = null) {
+  const get = (f) => item[`g:${f}`] ?? item[f] ?? "";
+
+  const id = String(get("id") || "");
+  if (id.includes("TEST")) return null;
+
+  const title = String(get("title") || "");
+  const brand = String(get("brand") || "").trim();
+
+  const { modelTitle, modelKey, capacity, color } =
+    resolution ?? resolveModelDeterministic(item);
 
   // ── NUEVO ── Descartar items con availability = "out_of_stock" antes de
   // normalizar el resto de campos. El feed puede incluir SKUs agotados que
