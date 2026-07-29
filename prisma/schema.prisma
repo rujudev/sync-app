@@ -30,3 +30,25 @@ model Session {
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
 }
+
+model ModelResolution {
+  cacheKey    String   @id          // `${brand}||${rawTitle}` exacto
+  rawTitle    String
+  brand       String
+  modelTitle  String
+  modelKey    String
+  capacity    String?
+  color       String?
+  source      String                // "ai" | "code" | "seed"
+  agreed      Boolean  @default(false)  // ¿coincide con el extractor?
+  frozen      Boolean  @default(false)  // true = nunca recalcular
+  createdAt   DateTime @default(now())
+  @@index([modelKey])
+}
+
+model ProductDescription {
+  modelKey      String   @id
+  html          String
+  promptVersion Int      @default(1)
+  createdAt     DateTime @default(now())
+}
