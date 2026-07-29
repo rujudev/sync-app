@@ -50,5 +50,11 @@ model ProductDescription {
   modelKey      String   @id
   html          String
   promptVersion Int      @default(1)
+  // Hash del texto del proveedor del que se extrajeron las specs. Si el
+  // proveedor corrige o amplía su descripción, el hash cambia y se regenera.
+  // Mientras no cambie, se reutiliza tal cual y computeProductUpdate no
+  // detecta ninguna diferencia en descriptionHtml.
+  sourceHash    String?
   createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
 }
