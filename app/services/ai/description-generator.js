@@ -136,9 +136,9 @@ const esValorUtil = (v) => {
 //     misma ficha sí sería peor.
 //   - Lista con <strong> para la etiqueta: legible para el usuario, escaneable
 //     por el buscador y compatible con cualquier tema de Shopify.
-//   - Sin estilos en línea: el tema es quien manda. La única clase es
-//     tw:leading-normal en los <p>, para que el texto respire (line-height 1.5),
-//     igual que en REFURBISHED_LEGAL_NOTICE_HTML.
+//   - Sin atributos ni estilos en línea: el tema es quien manda, y de todas
+//     formas sanitizeDescriptionHtml los borraría. La clase tw:leading-normal
+//     de los <p> se aplica después de sanear, en decorarParrafos.
 function construirHtml(datos, modelTitle) {
   const specs = [
     ['Pantalla',   datos.pantalla],
@@ -160,7 +160,7 @@ function construirHtml(datos, modelTitle) {
 
   const frase = String(datos.frase || '').trim();
   if (frase.length >= 40) {
-    partes.push(`<p class="tw:leading-normal">${destacarModelo(escapeHtml(frase), modelTitle)}</p>`);
+    partes.push(`<p>${destacarModelo(escapeHtml(frase), modelTitle)}</p>`);
   }
 
   // Sin specs y sin frase no hay nada que publicar.
@@ -195,7 +195,7 @@ async function generarDatos(modelTitle, brand, sourceDescription) {
 // Toda salida emite un evento. Si alguna se fuera en silencio, en la UI no
 // habría forma de distinguir "todo servido de caché" de "se saltaron N
 // productos sin avisar".
-export async function ensureDescription(modelKey, modelTitle, brand = '', sourceDescription = '') {
+async function resolverDescripcion(modelKey, modelTitle, brand = '', sourceDescription = '') {
   const emitir = (estado, motivo) =>
     sendProgress({ type: 'ai-description', modelKey, modelTitle, estado, ...(motivo ? { motivo } : {}) });
 
@@ -270,4 +270,24 @@ export async function ensureDescription(modelKey, modelTitle, brand = '', source
   logger.success(`📝 [IA/descripciones] "${modelTitle}" → ${extraidas.length}/4 specs (${extraidas.join(', ') || 'ninguna'})`);
   emitir('generada');
   return html;
+}
+
+// Da aire a los párrafos (line-height 1.5), igual que hace
+// REFURBISHED_LEGAL_NOTICE_HTML en product-builder.
+//
+// Se aplica aquí, y no en construirHtml, porque sanitizeDescriptionHtml borra
+// todos los atributos sin excepción: cualquier clase puesta antes de sanear
+// desaparece. Decorar después mantiene intacta esa garantía —el HTML de la IA
+// se neutraliza primero y los atributos que añadimos son nuestros— y además
+// alcanza a las descripciones que vienen de caché, que se guardaron sin clase.
+//
+// Solo sustituye <p> a pelo, así que es idempotente.
+function decorarParrafos(html) {
+  return html ? html.replace(/<p>/g, '<p class="tw:leading-normal">') : html;
+}
+
+export async function ensureDescription(modelKey, modelTitle, brand = '', sourceDescription = '') {
+  return decorarParrafos(
+    await resolverDescripcion(modelKey, modelTitle, brand, sourceDescription),
+  );
 }
